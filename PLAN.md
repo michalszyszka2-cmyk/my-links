@@ -32,7 +32,7 @@ Open questions: (1) whether Google lets the silent `prompt: ''` token request op
 
 ## C. Import from the board copy
 
-Status: built and tested, awaiting acceptance (29 Oct 2026)
+Status: accepted 29 Oct 2026 (orchestrator reran the suite live: 67 passed; fixtures replaced with made-up data of the same shape)
 
 What changed: index.html has a `#tools` block under `#account` in the sidebar with an "Import" button (existing button style) and a hidden file input (`.json`, multiple). Pick the board's `links.json` and, optionally, `notes.json` (each file is told apart by its shape, not its name). `importGroups()` accepts `[{name, links}]`, the older `{links: [...]}` and a bare list of links; a notes.json note goes onto a link only when the link has no `note` of its own (as `noteOf()` did); a URL starting `/pages/` or `/files/` becomes `http://localhost:4420` + that path (after the note lookup, so notes keyed by the relative URL still match). Then the existing `merge()` adds folders by name and skips URLs already present, and `save()` writes it the normal way (Drive file when signed in, this browser when not). Message: "Imported N links into M folders, skipped K already here." When nothing is new it only says so and writes nothing. Bug fixed in `merge()` (from B): two links with the same URL in one folder were both added; now the second is skipped. `test/fixtures/links.json` and `notes.json` are copies of the board files as of 29 Oct 2026.
 
@@ -42,7 +42,7 @@ Open questions: (1) The duplicate yt link: the kept one is titled "yt-BQJRLZ2q_N
 
 ## D. Bookmarklet
 
-Status: built and tested, awaiting acceptance (29 Oct 2026)
+Status: accepted 29 Oct 2026 (orchestrator reran the suite live: 67 passed; fixtures replaced with made-up data of the same shape)
 
 What changed: in the same `#tools` block, below Import: a "Save this page" link (button look, existing tokens) whose href is `javascript:(()=>{open('https://michalszyszka2-cmyk.github.io/my-links/?add='+encodeURIComponent(location.href)+'&title='+encodeURIComponent(document.title),'_blank')})()`, and the line "Drag this to your bookmarks bar. Click it on any page to save that page here." On load, `fromBookmarklet()` reads `?add=` and `&title=`, puts `title + ' ' + url` in `#paste` (just the URL when there is no title or the title is the URL), removes both parameters with `history.replaceState` (keeps any others and the hash) and focuses the box. Nothing is added until Enter, which runs the existing `add()`/`parse()`.
 
