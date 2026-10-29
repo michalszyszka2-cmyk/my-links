@@ -50,8 +50,6 @@
   #tools{margin:14px 10px 0 14px;font-size:13px;color:var(--muted);line-height:1.45}
   #tools p{margin:0 0 8px}
   #tools button{margin:0 6px 6px 0}
-  #tools .bm{display:inline-block;margin:10px 0 6px;font-size:13px;color:var(--ink);background:var(--panel);border:1px solid var(--rule);border-radius:4px;padding:4px 10px;text-decoration:none;cursor:grab}
-  #tools .bm:hover{background:var(--hover)}
 
   #main{padding:14px 20px 32px 8px;min-width:0}
   .add{display:flex;gap:8px;margin:0 56px 10px 0}
@@ -124,8 +122,6 @@
   <div id="tools">
     <button id="importBtn" title="Bring in links.json (and notes.json) from the board copy">Import</button>
     <input type="file" id="importFile" accept=".json,application/json" multiple hidden>
-    <br><a class="bm" id="bookmarklet" href="javascript:(()=>{open('https://michalszyszka2-cmyk.github.io/my-links/?add='+encodeURIComponent(location.href)+'&amp;title='+encodeURIComponent(document.title),'_blank')})()" title="Drag me to your bookmarks bar">Save this page</a>
-    <p>Drag this to your bookmarks bar. Click it on any page to save that page here.</p>
   </div>
 </nav>
 <main id="main">
@@ -621,17 +617,6 @@ async function importFiles(files){
 $('importBtn').onclick = () => $('importFile').click();
 $('importFile').onchange = e => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) importFiles(fs); };
 
-// the bookmarklet opens this page with ?add=<url>&title=<title>: put them in the paste box, Enter adds them
-function fromBookmarklet(){
-  const q = new URLSearchParams(location.search), url = q.get('add');
-  if (url === null) return;
-  const title = (q.get('title') || '').replace(/\s+/g, ' ').trim();
-  $('paste').value = (title && title !== url ? title + ' ' : '') + url.trim();
-  q.delete('add'); q.delete('title');
-  history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q : '') + location.hash);
-  $('paste').focus();
-}
-
 // the "where your links are kept" block under the folders
 function account(){
   const note = `<p>Keep your list as one file, <b>${esc(FILE_NAME)}</b>, on this computer. Nothing is stored anywhere else.</p>`;
@@ -748,7 +733,6 @@ async function boot(){
   render(); account();
   if (kept) { say('Changes kept in this browser are not saved yet; trying again.', true); sync(); }
 }
-fromBookmarklet();
 boot().catch(() => say("Couldn't load the links.", true));
 // for the fake-file test in test/file.test.html
 window.mylinks = {get groups(){ return groups; }, get handle(){ return handle; }, get granted(){ return granted; }, handles, choose, allow, forget, add, save, justSamples, SAMPLES, importLinks, importFiles};

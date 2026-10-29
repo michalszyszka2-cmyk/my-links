@@ -22,8 +22,6 @@ I kept my own research pages and tools in a list inside my planning board. I wan
 2. Paste a link and press Enter.
 3. It is in My links.json, wherever you saved it.
 
-To save the page you are looking at, drag "Save this page" to your bookmarks bar and click it on any page.
-
 ### Note under the buttons
 
 Nothing to install. It runs in your browser and only ever touches the one file you picked. Chrome, Edge or Brave.
@@ -56,7 +54,6 @@ Two things are open (see "Open questions" at the bottom): the Snip card has no s
                 <div class="app__col">
                   <h4 class="app__label">How to use</h4>
                   <p>Open the page and click <strong>Keep it on this computer</strong>. Paste a link and press <kbd>Enter</kbd>. It is in My links.json, wherever you saved it.</p>
-                  <p>To save the page you are looking at, drag <strong>Save this page</strong> to your bookmarks bar and click it on any page.</p>
                 </div>
               </div>
             </details>

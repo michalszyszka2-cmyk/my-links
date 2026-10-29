@@ -292,25 +292,7 @@ async function run(){
   await sleep(150);
   check('import: notes.json on its own asks for links.json', /Pick links\.json too/.test(p.msg()), p.msg());
 
-  // 13. bookmarklet: the link, and ?add= pre-fills the paste box
-  const bm = p.$('bookmarklet');
-  check('bookmarklet: "Save this page" opens the github.io page with ?add= and &title= in a new tab', bm && bm.textContent === 'Save this page' && bm.getAttribute('href').startsWith('javascript:') && bm.getAttribute('href').includes("open('https://michalszyszka2-cmyk.github.io/my-links/?add='+encodeURIComponent(location.href)+'&title='+encodeURIComponent(document.title),'_blank')"), bm && bm.getAttribute('href'));
-  check('bookmarklet: the one-line instruction is next to it', /Drag this to your bookmarks bar\. Click it on any page to save that page here\./.test(p.$('tools').textContent));
-  reset();
-  document.getElementById('frames').innerHTML = '';
-  const bf = document.createElement('iframe'); bf.src = '../index.html?add=https%3A%2F%2Fexample.org&title=Example%20Org'; document.getElementById('frames').append(bf);
-  await new Promise(r => bf.onload = r); await sleep(150);
-  const bd = bf.contentDocument;
-  check('?add=: the paste box holds "Example Org https://example.org"', bd.getElementById('paste').value === 'Example Org https://example.org', bd.getElementById('paste').value);
-  check('?add=: the box has focus', bd.activeElement === bd.getElementById('paste'));
-  check('?add=: the address bar is cleaned', bf.contentWindow.location.search === '' && /\/index\.html$/.test(bf.contentWindow.location.pathname), bf.contentWindow.location.href);
-  check('?add=: nothing added until Enter', bd.querySelectorAll('#list li[data-i]').length === 3);
-  bd.getElementById('paste').dispatchEvent(new bf.contentWindow.KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
-  await sleep(150);
-  check('?add=: Enter adds the row', [...bd.querySelectorAll('#list li[data-i] .tt')].some(e => e.textContent === 'Example Org') && /Added 1 link to Ungrouped/.test(bd.getElementById('msg').textContent), bd.getElementById('msg').textContent);
-  check('?add=: saved in this browser (try-it mode)', JSON.parse(localStorage.getItem('mylinks.v1')).groups.some(g => g.links.some(l => l.url === 'https://example.org' && l.title === 'Example Org')));
-
-  // 14. the real handle store (IndexedDB) round-trips a value in this browser
+  // 13. the real handle store (IndexedDB) round-trips a value in this browser
   const real = (await page('window.showSaveFilePicker = parent.fakeSave; window.showOpenFilePicker = parent.fakeOpen;')).app().handles;
   await real.set({kind: 'probe', name: 'probe.json'});
   const back = await real.get();
