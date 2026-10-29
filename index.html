@@ -24,8 +24,6 @@
   #app{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
   #side{padding:18px 10px 24px 12px;position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto}
   h1{font-family:"Young Serif",Georgia,serif;font-weight:400;font-size:24px;margin:0 0 16px 14px}
-  #addOpen{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600;padding:12px 22px;border-radius:16px;border:1px solid var(--rule);background:var(--panel);margin:0 0 14px}
-  #addOpen span{font-size:20px;line-height:1;font-weight:400}
   .fold{display:flex;align-items:center;gap:10px;height:34px;padding:0 10px 0 14px;border-radius:0 17px 17px 0;cursor:pointer;font-size:14px;position:relative;user-select:none}
   .fold:hover{background:var(--hover)}
   .fold.on{background:var(--pick);font-weight:600}
@@ -121,7 +119,6 @@
 <div id="app">
 <nav id="side" aria-label="Folders">
   <h1>My links</h1>
-  <button id="addOpen"><span>+</span> Add a link</button>
   <div id="folders"></div>
   <div id="account" aria-label="Google sign-in"></div>
   <div id="tools">
@@ -459,7 +456,6 @@ function rename(gi){
   box.onblur = () => finish(true);
 }
 
-$('addOpen').onclick = () => $('paste').focus();
 $('addBtn').onclick = add;
 $('paste').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); add(); } });
 // a pasted block of several lines is added straight away
