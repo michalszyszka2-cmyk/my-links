@@ -236,63 +236,7 @@ async function run(){
   check('no Google: no client ID, no Drive URL, no gsi script in the page', !/googleapis\.com\/drive|accounts\.google\.com|CLIENT_ID|drive\.file/.test(html));
   check('wording: "this browser has no room to store it"', /this browser has no room to store it/.test(html) && !/has room to store it/.test(html.replace(/no room to store it/g, '')));
 
-  // 12. import from the board copy: made-up links.json + notes.json with the same shape and counts as the board files (20 links, 7 groups, one duplicate page, 18 notes)
-  const fxLinks = await (await fetch('fixtures/links.json')).text(), fxNotes = await (await fetch('fixtures/notes.json')).text();
-  const fx = JSON.parse(fxLinks), fxN = JSON.parse(fxNotes), fxAll = fx.flatMap(g => g.links);
-  const board = u => /^\/(pages|files)\//.test(u) ? 'http://localhost:4420' + u : u;
-  const fxUrls = new Set(fxAll.map(l => board(l.url)));
-  check(`fixture: ${fxAll.length} links in ${fx.length} groups, ${fx.filter(g => g.links.length).length} with links; ${fxUrls.size} distinct URLs once /pages/ and /files/ point at localhost:4420`, fxAll.length === 20 && fx.length === 7 && fx.filter(g => g.links.length).length === 6 && fxUrls.size === 19);
-  // picks files through the real Import control (the file input's change event)
-  const pick = async (p, names) => {
-    const dt = new p.w.DataTransfer();
-    names.forEach(([n, t]) => dt.items.add(new p.w.File([t], n, {type: 'application/json'})));
-    p.$('importFile').files = dt.files;
-    p.$('importFile').dispatchEvent(new p.w.Event('change'));
-  };
-  const linksOf = gs => gs.flatMap(g => g.links);
-  reset(); fakeHandles.h = null; disk.files = {}; disk.calls = []; disk.pickName = null;
-  p = await page();
-  check('import: the Import button and its file picker are in the sidebar', p.d.querySelector('#side #importBtn') && p.$('importFile').type === 'file' && p.$('importFile').multiple);
-  p.$('newFile').click();
-  await until(() => p.$('forget') && content(F));
-  await pick(p, [['links.json', fxLinks], ['notes.json', fxNotes]]);
-  await until(() => /^Imported/.test(p.msg()) && inFile(F) > 0);
-  const got = content(F).groups, gotL = linksOf(got);
-  check('import: message "Imported 19 links into 6 folders, skipped 1 already here."', p.msg() === 'Imported 19 links into 6 folders, skipped 1 already here.', p.msg());
-  check('import: 19 links in the file (20 in the board; two are the same page once /files/ is rewritten)', gotL.length === 19 && linksOf(p.app().groups).length === 19, gotL.length);
-  check('import: the 6 named folders are there by name, in order', JSON.stringify(got.filter(g => g.links.length).map(g => g.name)) === JSON.stringify(fx.filter(g => g.links.length).map(g => g.name)), JSON.stringify(got.map(g => g.name)));
-  check('import: zero URLs starting with /', gotL.every(l => !l.url.startsWith('/')), gotL.filter(l => l.url.startsWith('/')).map(l => l.url).join(' '));
-  check('import: every board URL is in, /pages/ and /files/ now at http://localhost:4420', [...fxUrls].every(u => gotL.some(l => l.url === u)) && gotL.some(l => l.url === 'http://localhost:4420/pages/portfolio/'));
-  const attached = fxAll.filter(l => !('note' in l) && fxN[l.url]);
-  check(`import: notes.json attached to the ${attached.length} links with no note of their own`, attached.length === 18 && attached.every(l => gotL.find(x => x.url === board(l.url)).note === fxN[l.url]));
-  const own = fxAll.find(l => l.url.startsWith('/files/'));
-  check("import: a link's own note wins over notes.json", gotL.find(x => x.url === board(own.url)).note === own.note && own.note !== fxN[own.url]);
-  check('import: titles, icons and dates kept', fxAll.filter(l => !l.url.startsWith('http://localhost:4420/files/')).every(l => gotL.some(x => x.title === l.title && x.icon === l.icon && x.added === l.added)));
-  check('import: went through save (written to the file, PENDING cleared)', disk.calls.some(c => c === 'write ' + F) && localStorage.getItem('board.v1.links.pending') === null);
-  disk.calls = [];
-  await pick(p, [['links.json', fxLinks], ['notes.json', fxNotes]]);
-  await until(() => /skipped 20/.test(p.msg()));
-  check('import again: skips everything', p.msg() === 'Imported 0 links into 0 folders, skipped 20 already here.' && linksOf(content(F).groups).length === 19, p.msg());
-  check('import again: nothing written', !disk.calls.some(c => /^write/.test(c)), disk.calls.join(' | '));
-  // try-it mode: the same import lands in this browser
-  reset({'mylinks.v1': {groups: []}}); fakeHandles.h = null;
-  p = await page();
-  await pick(p, [['links.json', fxLinks]]);
-  await until(() => /^Imported/.test(p.msg()));
-  const loc = linksOf(JSON.parse(localStorage.getItem('mylinks.v1')).groups);
-  check('import, try-it mode: lands in this browser; links.json alone works', loc.length === 19 && p.msg() === 'Imported 19 links into 6 folders, skipped 1 already here.', p.msg());
-  check("import, try-it mode, no notes.json: only the links' own notes", loc.filter(l => l.note).length === 1);
-  // the older flat shape {links: [...]}
-  reset({'mylinks.v1': {groups: []}});
-  p = await page();
-  await pick(p, [['links.json', JSON.stringify({links: [{title: 'Flat', url: '/pages/flat/'}]})]]);
-  await until(() => /^Imported/.test(p.msg()));
-  check('import: the older flat {links: [...]} goes into Ungrouped', p.msg() === 'Imported 1 link into 1 folder, skipped 0 already here.' && JSON.parse(localStorage.getItem('mylinks.v1')).groups.some(g => g.name === '' && g.links[0] && g.links[0].url === 'http://localhost:4420/pages/flat/'), p.msg());
-  await pick(p, [['notes.json', fxNotes]]);
-  await sleep(150);
-  check('import: notes.json on its own asks for links.json', /Pick links\.json too/.test(p.msg()), p.msg());
-
-  // 13. the real handle store (IndexedDB) round-trips a value in this browser
+  // 12. the real handle store (IndexedDB) round-trips a value in this browser
   const real = (await page('window.showSaveFilePicker = parent.fakeSave; window.showOpenFilePicker = parent.fakeOpen;')).app().handles;
   await real.set({kind: 'probe', name: 'probe.json'});
   const back = await real.get();

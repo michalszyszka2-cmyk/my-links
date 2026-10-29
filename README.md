@@ -14,8 +14,6 @@ Folders sit on the left and links sit in rows on the right, like an inbox. Each 
 4. Drag a link onto a folder to move it, or tick several to move or delete them together.
 5. Filter by date, sort newest or oldest first, and switch between light and dark with the button top right.
 
-At the bottom of the sidebar the Import button reads a links.json from the board version.
-
 ## Where your links live
 
 Your list is one file, `My links.json`, saved wherever you put it on your computer. The page writes to it through the browser's own file picker and remembers which file you chose. On a later visit the browser asks once, with a click on "Allow", before the page may use the file again. Nothing is sent to any server, and there is no account to make.
