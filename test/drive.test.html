@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My links: fake-Drive test</title>
+<style>
+  body{margin:0;padding:16px;font:14px/1.5 system-ui,sans-serif;background:#faf8f4;color:#1f1d1a}
+  pre{white-space:pre-wrap}
+  .pass{color:#2f8a77}.fail{color:#b5482f;font-weight:600}
+  iframe{width:100%;height:420px;border:1px solid #e2ddd3;background:#fff}
+</style>
+</head>
+<body>
+<h1 style="font-size:18px">My links: the Google Drive layer against a fake Drive</h1>
+<p>Loads <code>../index.html</code> in an iframe with <code>fetch</code> and Google's token client stubbed, so no real Google is touched.
+Needs a web server (file:// can't fetch). Your own try-it data in this browser is saved before the run and put back after.</p>
+<pre id="out">running…</pre>
+<div id="frames"></div>
+<script>
+const out = document.getElementById('out');
+const lines = [];
+let fails = 0;
+function log(ok, name, why){ lines.push((ok ? 'PASS ' : 'FAIL ') + name + (why ? ': ' + why : '')); if (!ok) fails++; out.innerHTML = lines.map(l => `<span class="${l.startsWith('PASS') ? 'pass' : 'fail'}">${l}</span>`).join('\n'); }
+function check(name, cond, why){ log(!!cond, name, cond ? '' : why); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function until(fn, ms = 4000){ const t = Date.now(); while (Date.now() - t < ms) { if (fn()) return true; await sleep(30); } return false; }
+
+// ---- the keys the app uses in this origin; saved and restored around the run ----
+const KEYS = ['mylinks.v1', 'mylinks.v1.signedin', 'mylinks.v1.file', 'board.v1.links.pending', 'board.v1.links.view', 'board.v1.links.when', 'board.v1.links.sort'];
+const saved = Object.fromEntries(KEYS.map(k => [k, localStorage.getItem(k)]));
+function reset(preset = {}){ KEYS.forEach(k => localStorage.removeItem(k)); Object.entries(preset).forEach(([k, v]) => localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v))); }
+function restore(){ KEYS.forEach(k => saved[k] === null ? localStorage.removeItem(k) : localStorage.setItem(k, saved[k])); }
+
+// ---- the fake Drive: files by id, each {meta, content}; one valid token at a time ----
+const drive = {files: {}, n: 0, token: 'tok-1', calls: []};
+const res = (status, body, json = true) => new Response(json ? JSON.stringify(body) : body, {status, headers: {'Content-Type': 'application/json'}});
+async function fakeFetch(url, init = {}){
+  drive.calls.push((init.method || 'GET') + ' ' + url);
+  const auth = (init.headers || {}).Authorization;
+  if (auth !== 'Bearer ' + drive.token) return res(401, {error: {code: 401, message: 'Invalid Credentials'}});
+  const u = new URL(url);
+  const API = 'https://www.googleapis.com/drive/v3/files', UP = 'https://www.googleapis.com/upload/drive/v3/files';
+  if (url.startsWith(API + '?')) {                                  // files.list
+    const q = u.searchParams.get('q') || '';
+    const m = q.match(/appProperties has \{ key='(\w+)' and value='([\w-]+)' \}/);
+    const files = Object.entries(drive.files).filter(([id, f]) => !f.trashed && m && f.meta.appProperties && f.meta.appProperties[m[1]] === m[2]).map(([id, f]) => ({id, name: f.meta.name}));
+    return res(200, {files});
+  }
+  if (url.startsWith(UP + '?') && init.method === 'POST') {          // multipart create
+    const ct = init.headers['Content-Type'] || '';
+    const b = ct.match(/boundary=(.+)$/)[1];
+    const parts = init.body.split('--' + b).filter(p => p.trim() && p.trim() !== '--').map(p => JSON.parse(p.split('\r\n\r\n')[1].trim()));
+    const id = 'file-' + (++drive.n);
+    drive.files[id] = {meta: parts[0], content: parts[1]};
+    return res(200, {id});
+  }
+  let m = url.match(/^https:\/\/www\.googleapis\.com\/upload\/drive\/v3\/files\/([\w-]+)\?uploadType=media$/);
+  if (m && init.method === 'PATCH') {
+    if (!drive.files[m[1]]) return res(404, {error: {code: 404}});
+    drive.files[m[1]].content = JSON.parse(init.body);
+    return res(200, {id: m[1]});
+  }
+  m = url.match(/^https:\/\/www\.googleapis\.com\/drive\/v3\/files\/([\w-]+)\?alt=media$/);
+  if (m) {
+    if (!drive.files[m[1]]) return res(404, {error: {code: 404}});
+    return res(200, drive.files[m[1]].content);
+  }
+  return res(400, {error: 'unexpected ' + url});
+}
+// ---- the fake token client: answers the next request with `next` ----
+const fakeGoogle = {next: {access_token: 'tok-1', expires_in: 3599}, prompts: [], accounts: {oauth2: {initTokenClient(cfg){
+  return {requestAccessToken(o){ fakeGoogle.prompts.push(o.prompt); const r = fakeGoogle.next; setTimeout(() => r.error ? cfg.error_callback({type: r.error}) : cfg.callback(r), 20); }};
+}}}};
+window.fakeFetch = fakeFetch; window.fakeGoogle = fakeGoogle;
+
+// ---- the page under test, in an iframe, with the client ID filled in and the stubs in place ----
+let html = null;
+async function page(){
+  if (!html) {
+    html = await (await fetch('../index.html')).text();
+    html = html.replace("'PASTE-YOUR-CLIENT-ID.apps.googleusercontent.com'", "'test.apps.googleusercontent.com'");
+    html = html.replace('<head>', '<head><script>window.google = parent.fakeGoogle; window.fetch = parent.fakeFetch;<\/script>');
+  }
+  document.getElementById('frames').innerHTML = '';
+  const f = document.createElement('iframe');
+  f.srcdoc = html;
+  document.getElementById('frames').append(f);
+  await new Promise(r => f.onload = r);
+  await sleep(150);
+  const w = f.contentWindow, d = f.contentDocument;
+  return {w, d, $: id => d.getElementById(id), rows: () => [...d.querySelectorAll('#list li[data-i] .tt')].map(e => e.textContent), msg: () => d.getElementById('msg').textContent, app: () => w.mylinks};
+}
+const count = g => g.reduce((n, x) => n + x.links.length, 0);
+const fileOf = () => Object.values(drive.files)[0];
+
+async function run(){
+  // 1. try-it mode: samples
+  reset();
+  let p = await page();
+  check('try-it: three sample links in one folder "Examples"', p.rows().length === 3 && [...p.d.querySelectorAll('.fold .fn')].some(e => e.textContent === 'Examples'), `rows=${p.rows().length}`);
+  check('try-it: sign-in button and the plain sentence are there', p.$('signin') && !p.$('signin').disabled && /kept in one file in your own Google Drive/.test(p.$('account').textContent));
+  check('try-it: nothing in localStorage yet (untouched samples are not written)', localStorage.getItem('mylinks.v1') === null);
+  p.$('paste').value = 'Mine https://mine.example/one'; p.$('addBtn').click();
+  await until(() => p.rows().length === 4);
+  check('try-it: adding a link keeps it in the browser', JSON.parse(localStorage.getItem('mylinks.v1')).groups.some(g => g.links.some(l => l.url === 'https://mine.example/one')));
+  p = await page();
+  check('try-it: reload keeps the link', p.rows().length === 4, `rows=${p.rows().length}`);
+
+  // 2. first sign-in with untouched samples: creates the file with the marker, no offer
+  reset(); drive.files = {}; drive.n = 0; drive.calls = []; drive.token = 'tok-1'; fakeGoogle.next = {access_token: 'tok-1', expires_in: 3599};
+  p = await page();
+  p.$('signin').click();
+  await until(() => Object.keys(drive.files).length === 1 && p.$('signout'));
+  let f = fileOf();
+  check('first sign-in: creates one file', Object.keys(drive.files).length === 1, JSON.stringify(Object.keys(drive.files)));
+  check('first sign-in: file is "My links.json" with the marker app=my-links', f && f.meta.name === 'My links.json' && f.meta.appProperties && f.meta.appProperties.app === 'my-links', f && JSON.stringify(f.meta));
+  check('first sign-in: created in the Drive root (no parents) as application/json', f && !f.meta.parents && f.meta.mimeType === 'application/json');
+  check('first sign-in: looked for it by marker first', drive.calls.some(c => /GET .*appProperties/.test(c)), drive.calls.join(' | '));
+  check('first sign-in: remembers signed-in + file id, never the token', localStorage.getItem('mylinks.v1.signedin') === '1' && localStorage.getItem('mylinks.v1.file') === 'file-1' && !Object.values(localStorage).some(v => /tok-1/.test(v)));
+  check('first sign-in: untouched samples bring no keep/discard question', !/in this browser only/.test(p.msg()) && p.rows().length === 0, p.msg());
+  check('first sign-in: shows "Signed in" and a Sign out button', /Signed in/.test(p.$('account').textContent) && p.$('signout'));
+
+  // 3. write then read round-trips
+  p.$('paste').value = 'Round trip https://round.example/trip'; p.$('addBtn').click();
+  await until(() => f.content && count(f.content.groups) === 1);
+  check('write: every change PATCHes the whole JSON to the file', f.content && f.content.groups[0].links[0].url === 'https://round.example/trip' && drive.calls.some(c => /PATCH .*file-1\?uploadType=media/.test(c)), JSON.stringify(f.content));
+  check('write: PENDING cleared after a good write', localStorage.getItem('board.v1.links.pending') === null);
+  p = await page();                                                    // reload: silent token, read from Drive
+  await until(() => p.rows().length === 1);
+  check('read: reload loads the list from the file', p.rows().length === 1 && p.rows()[0] === 'Round trip', JSON.stringify(p.rows()));
+  check('read: the reload asked for a token silently (prompt "")', fakeGoogle.prompts[fakeGoogle.prompts.length - 1] === '', JSON.stringify(fakeGoogle.prompts));
+
+  // 4. second load with the file id forgotten: found by marker, not created again
+  localStorage.removeItem('mylinks.v1.file'); drive.calls = [];
+  p = await page();
+  await until(() => p.rows().length === 1);
+  check('find: with the id forgotten, the file is found by marker and nothing new is created', Object.keys(drive.files).length === 1 && localStorage.getItem('mylinks.v1.file') === 'file-1' && !drive.calls.some(c => /POST/.test(c)), drive.calls.join(' | '));
+
+  // 5. token expired (401): sign-in control back, PENDING kept, then sign in again saves it
+  drive.token = 'tok-2';                                               // Drive no longer accepts tok-1
+  p.$('paste').value = 'Late https://late.example/'; p.$('addBtn').click();
+  await until(() => /sign in again/.test(p.msg()));
+  check('401: the message says the file updates once you sign in again', /Kept in this browser; the file updates once you sign in again\./.test(p.msg()), p.msg());
+  check('401: the list stays on screen with the new link', p.rows().length === 2, JSON.stringify(p.rows()));
+  check('401: PENDING holds the full list', JSON.parse(localStorage.getItem('board.v1.links.pending') || '{}').groups?.some(g => g.links.some(l => l.url === 'https://late.example/')));
+  check('401: the sign-in button is back', p.$('signin') && !p.$('signin').disabled);
+  check('401: the file was not touched', count(f.content.groups) === 1);
+  fakeGoogle.next = {access_token: 'tok-2', expires_in: 3599};
+  p.$('signin').click();
+  await until(() => count(f.content.groups) === 2);
+  check('401 then sign-in: the kept change is written to the file', count(f.content.groups) === 2 && localStorage.getItem('board.v1.links.pending') === null, JSON.stringify(f.content));
+
+  // 6. silent refresh fails on load: sign-in shown, PENDING intact, nothing blank
+  const keptBody = JSON.stringify({groups: [{name: '', links: [{title: 'Kept', url: 'https://kept.example/', icon: '🔗', added: '2026-10-29'}]}]});
+  reset({'mylinks.v1.signedin': '1', 'mylinks.v1.file': 'file-1', 'board.v1.links.pending': keptBody});
+  fakeGoogle.next = {error: 'popup_failed_to_open'};
+  p = await page();
+  await until(() => p.$('signin') && /Sign in/.test(p.msg()));
+  check('silent fail: the sign-in button shows and the page is not blank', p.$('signin') && p.rows()[0] === 'Kept', JSON.stringify(p.rows()));
+  check('silent fail: PENDING untouched', localStorage.getItem('board.v1.links.pending') === keptBody);
+  check('silent fail: the message asks to sign in', /not in your Drive file yet\. Sign in to save them/.test(p.msg()), p.msg());
+  // a link added while signed out with no list loaded is an addition, not the whole file
+  reset({'mylinks.v1.signedin': '1', 'mylinks.v1.file': 'file-1'});
+  p = await page();
+  await until(() => p.$('signin'));
+  p.$('paste').value = 'Offline https://offline.example/'; p.$('addBtn').click();
+  await until(() => /sign in again/.test(p.msg()));
+  check('signed-out add: kept as a partial list', JSON.parse(localStorage.getItem('board.v1.links.pending')).partial === true);
+  fakeGoogle.next = {access_token: 'tok-2', expires_in: 3599};
+  p.$('signin').click();
+  await until(() => count(f.content.groups) === 3);
+  check('signed-out add then sign-in: merged into the file, nothing overwritten', count(f.content.groups) === 3 && f.content.groups.some(g => g.links.some(l => l.url === 'https://offline.example/')) && f.content.groups.some(g => g.links.some(l => l.url === 'https://round.example/trip')), JSON.stringify(f.content));
+
+  // 7. try-it data worth keeping: the question, Keep / Start empty
+  const mine = {groups: [{name: 'Work', links: [{title: 'Mine', url: 'https://mine.example/two', icon: '🔗', added: '2026-10-29', note: 'kept'}]}]};
+  reset({'mylinks.v1': mine}); drive.files = {}; drive.n = 0; drive.token = 'tok-3'; fakeGoogle.next = {access_token: 'tok-3', expires_in: 3599};
+  p = await page();
+  p.$('signin').click();
+  await until(() => /in this browser only/.test(p.msg()));
+  const btns = [...p.d.querySelectorAll('#msg button')].map(b => b.textContent);
+  check('try-it data: the question appears in #msg with the two buttons', btns.join('/') === 'Keep these links/Start empty', btns.join('/'));
+  check('try-it data: no window.confirm in the page', !/window\.confirm|[^.\w]confirm\(/.test(html));
+  p.d.querySelectorAll('#msg button')[0].click();
+  await until(() => fileOf() && fileOf().content && count(fileOf().content.groups) === 1);
+  f = fileOf();
+  check('Keep these links: the link lands in the file in its folder with its note', f.content.groups.some(g => g.name === 'Work' && g.links[0].url === 'https://mine.example/two' && g.links[0].note === 'kept'), JSON.stringify(f.content));
+  check('Keep these links: the browser copy is cleared', localStorage.getItem('mylinks.v1') === null);
+  reset({'mylinks.v1': mine}); drive.files = {}; drive.n = 0;
+  p = await page();
+  p.$('signin').click();
+  await until(() => /in this browser only/.test(p.msg()));
+  p.d.querySelectorAll('#msg button')[1].click();
+  await sleep(100);
+  check('Start empty: the file stays empty and the browser copy is cleared', count(fileOf().content.groups) === 0 && localStorage.getItem('mylinks.v1') === null && p.rows().length === 0);
+
+  // 8. sign out: back to try-it mode, Drive file untouched
+  p.$('paste').value = 'Before out https://out.example/'; p.$('addBtn').click();
+  await until(() => count(fileOf().content.groups) === 1);
+  p.$('signout').click();
+  await until(() => /Signed out/.test(p.msg()));
+  check('sign out: forgets signed-in and the file id', localStorage.getItem('mylinks.v1.signedin') === null && localStorage.getItem('mylinks.v1.file') === null);
+  check('sign out: the samples are back and the sign-in button too', p.rows().length === 3 && p.$('signin') && !p.$('signout'), JSON.stringify(p.rows()));
+  check('sign out: the Drive file still exists with its link', Object.keys(drive.files).length === 1 && count(fileOf().content.groups) === 1);
+  check('sign out: the token is gone from memory', p.app().token === null);
+  check('sign out: no revoke call was made', !drive.calls.some(c => /revoke/.test(c)));
+
+  // 9. the placeholder client ID: the button says Google is not connected, try-it still works
+  reset();
+  const raw = await (await fetch('../index.html')).text();
+  document.getElementById('frames').innerHTML = '';
+  const fr = document.createElement('iframe'); fr.srcdoc = raw; document.getElementById('frames').append(fr);
+  await new Promise(r => fr.onload = r); await sleep(150);
+  const d2 = fr.contentDocument;
+  check('placeholder ID: the button says Google is not connected yet and is disabled', d2.getElementById('signin') && d2.getElementById('signin').disabled && /not connected yet/.test(d2.getElementById('signin').textContent), d2.getElementById('signin') && d2.getElementById('signin').textContent);
+  check('placeholder ID: the page still works in try-it mode', d2.querySelectorAll('#list li[data-i]').length === 3);
+  check('placeholder ID: no Google script is loaded', ![...d2.scripts].some(s => /accounts\.google\.com/.test(s.src)));
+
+  // 10. the wording fix
+  check('wording: "this browser has no room to store it"', /this browser has no room to store it/.test(html) && !/has room to store it/.test(html.replace(/no room to store it/g, '')));
+}
+run().catch(e => log(false, 'harness error', e.stack || e.message)).finally(() => {
+  restore();
+  lines.push(`\n${lines.filter(l => l.startsWith('PASS')).length} passed, ${fails} failed`);
+  out.innerHTML = lines.map(l => `<span class="${l.startsWith('FAIL') ? 'fail' : l.startsWith('PASS') ? 'pass' : ''}">${l}</span>`).join('\n');
+  document.title = (fails ? 'FAIL ' : 'PASS ') + 'My links fake-Drive test';
+});
+</script>
+</body>
+</html>
