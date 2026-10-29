@@ -15,20 +15,7 @@ Open questions: none. Departures: a pasted Windows path now says "That doesn't l
 
 ## B. Google Drive storage layer
 
-Status: built, awaiting Michal's sign-in test (29 Oct 2026)
-
-What changed: the `store` stub in index.html is now a Google Drive layer, browser only, no server. `CLIENT_ID` is one constant at the top of the script (placeholder `PASTE-YOUR-CLIENT-ID.apps.googleusercontent.com`); while it is the placeholder the sidebar button reads "Google not connected yet" (disabled) and the page runs in try-it mode. Try-it mode: the list lives in localStorage `mylinks.v1` and starts with three sample links in one folder "Examples" (example.com, Wikipedia's Bookmark page, MDN); the samples are not written to storage until something changes. Sign-in: Google Identity Services token client, scope `drive.file` only, loaded only when a client ID is in. On sign-in the page looks for the file by `appProperties` marker (`app=my-links`, `files.list` with `q`), creates `My links.json` in the Drive root (multipart upload, visible to them) when there is none, reads it, and if the browser held try-it links that are not the untouched samples asks "Keep these links" / "Start empty" in `#msg` (no window.confirm). Every change PATCHes the whole JSON (`upload/drive/v3/files/{id}?uploadType=media`) through the existing `push()`/`save()`/`sync()` and PENDING retry. localStorage remembers only `mylinks.v1.signedin` and `mylinks.v1.file`, never the token; on load with a remembered sign-in it asks for a token with `prompt: ''` and, if that fails (popup blocked, closed, timed out after 8 s), shows the sign-in button with whatever is kept in this browser on screen and PENDING intact. A 401 or a timed-out token drops the token, shows the sign-in button, and the change is kept under PENDING until they sign in again. A link added while signed out, before the file was read, is kept as a partial list and merged into the file on sign-in (never overwrites it). "Sign out" first writes anything pending (refuses to sign out if that fails), then forgets the two keys and returns to try-it mode; the Drive file stays and the grant is not revoked. If the remembered file is gone from Drive (404) the id is forgotten and the file is found by marker or created again. The sidebar block `#account` sits under the folders in the existing button/muted-text styles, no new fonts. The stub's error wording is now "this browser has no room to store it".
-
-Tested: `test/drive.test.html` loads index.html in an iframe with `fetch` and the Google token client stubbed (fake Drive in memory; the test saves and restores this browser's own keys). 42 checks, all pass on 29 Oct 2026 at http://127.0.0.1:8798/test/drive.test.html: try-it samples + add + reload; first sign-in creates one file named `My links.json` with `appProperties.app=my-links`, no parents, after a `files.list` by marker; signed-in + file id remembered, token never in localStorage; write PATCHes the whole JSON and clears PENDING; reload reads the file back with a silent (`prompt: ''`) token; with the file id forgotten the file is found by marker and not created again; 401 shows "Kept in this browser; the file updates once you sign in again.", keeps the list and PENDING, shows the sign-in button, then sign-in writes the kept change; silent refresh failure on load shows the sign-in button with the kept list on screen; a link added while signed out is merged, not overwriting; try-it data brings the Keep / Start empty question and both answers do what they say; sign out forgets the keys, brings the samples back, leaves the file, no revoke; placeholder ID shows "Google not connected yet" and loads no Google script; wording fix present. Live page at 127.0.0.1:8798: samples show, `Quietside quietside.co.uk` adds a row, reload keeps it, no console messages, scrollWidth = innerWidth at 1280 and 390, light and dark (screenshots at half scale). The grep for api/links, /files/, agent-embed, localhost:4420, notes.json returns nothing; `links.json` matches only the Drive file's own name `My links.json`.
-
-Manual check for Michal (after gate G gives a client ID):
-1. Paste the client ID into `const CLIENT_ID = '...'` at the top of the script in index.html, commit, push, wait a minute for Pages.
-2. Open https://michalszyszka2-cmyk.github.io/my-links/ in a private window: the three Examples show and the sidebar button reads "Sign in with Google".
-3. Click it, pick the account, allow "See, edit, create and delete only the specific Google Drive files that you use with this app": the sidebar says "Signed in" and the list is empty.
-4. Paste a link and press Enter: the message reads "Added 1 link to Ungrouped." and no error.
-5. Open drive.google.com: `My links.json` is in My Drive; open it and the link is inside. Reload the page: the link is still there (if the sign-in window is blocked on reload, click "Sign in with Google" once).
-
-Open questions: (1) whether Google lets the silent `prompt: ''` token request open on page load without a click; browsers block popups with no gesture, so Michal may see the sign-in button on every fresh load (one click, nothing lost). Only his real test can settle it. (2) The two-button question says "Drop them" instead of "Start empty" when the Drive file already has links, because "Start empty" would read as wiping the Drive list.
+Status: REPLACED 29 Oct 2026 (evening) by stream I below. Michal's call, 29 Oct: "Desktop only." The Drive layer, the client-ID placeholder, GOOGLE-SETUP.md and test/drive.test.html are gone from the repo (history has them at dc8d9c0).
 
 ## C. Import from the board copy
 
@@ -58,7 +45,7 @@ What changed: wrote README.md (screenshot, pitch, How to use, Where your links l
 
 Tested: screenshot viewed and shows folders plus link rows; README links point at GOOGLE-SETUP.md and LICENSE, both present.
 
-Open questions: screenshot shows the 'Google not connected yet' sidebar note because CLIENT_ID is still the placeholder; retake after G if wanted.
+Open questions: none. Screenshot retaken 29 Oct (evening) after stream I; it shows the "Keep it on this computer" sidebar.
 
 ## F. Portfolio entry, DRAFT ONLY
 
@@ -72,13 +59,7 @@ Open questions: no step strip exists in the portfolio to copy (steps are written
 
 ## G. GATE: Google Cloud project
 
-Status: blocked (only Michal can do this in the Google console)
-
-What changed:
-
-Tested:
-
-Open questions:
+Status: closed, not needed (desktop only, 29 Oct 2026)
 
 ## H. GATE: retiring the board copy
 
@@ -89,3 +70,21 @@ What changed:
 Tested:
 
 Open questions:
+
+## I. File on this computer (replaces B)
+
+Status: built and tested 29 Oct 2026 (evening); the one real-dialog step is Michal's manual check below
+
+What changed: the `store` in index.html writes one file on the person's own computer through the File System Access API (`showSaveFilePicker` / `showOpenFilePicker`, `createWritable`). `CAN_FILE` is true when `window.showSaveFilePicker` is a function (Chrome, Edge, Brave); otherwise the sidebar says "This browser can't save a file on your computer (Chrome, Edge and Brave can), so your links stay in this browser." and the page runs in try-it mode (Firefox, Safari). Sidebar in try-it mode: "Keep it on this computer" (save picker, suggested name `My links.json`, `.json` type) and "Open my file" (open picker, for a file made before, here or on another computer). The chosen handle goes into IndexedDB (`mylinks` db, store `h`, key `file`); localStorage keeps only the flag `mylinks.v1.file = '1'`. On a later visit `queryPermission({mode:'readwrite'})` is tried without a click; if the browser wants a click the sidebar shows "The browser needs your OK to use My links.json on this visit." with an Allow button (`requestPermission`), the kept list on screen and PENDING intact. A write refused by the browser (NotAllowedError) keeps the change under PENDING with "Kept in this browser; the file updates once you allow access to the file again." and brings Allow back. A missing file (NotFoundError) says "... once you pick the file again." and the sidebar offers Open my file / New file / Forget this file; a re-pick merges the kept links into the picked file (never writes over a different file). A new file is written once as `{"groups": []}` so it is never left blank; the JSON is pretty-printed. First pick from try-it mode with links worth keeping asks "Keep these links" / "Start empty" (or "Drop them" when the picked file already has links) in `#msg`, as the Drive layer did. "Forget this file" writes anything pending first (refuses if it can't), then drops the flag and the handle and returns to try-it mode; the file stays. Every Drive constant, the Google script and the client ID are gone. `window.fakeHandles`, when present, replaces the IndexedDB store (for the test). `window.mylinks` exposes `handle`, `granted`, `handles`, `choose`, `allow`, `forget` for the test.
+
+Tested: `test/file.test.html` (replaces drive.test.html) loads index.html in an iframe with the two pickers, the file handles and the handle store stubbed: 80 checks, all pass at http://127.0.0.1:8812/test/file.test.html on 29 Oct 2026. Covers try-it samples + add + reload; new file via the save picker (name, type, `{"groups": []}` written, handle remembered, no question, sidebar "Kept on this computer as My links.json"); write round-trips, pretty-printed, PENDING cleared; reload reads with query only, no prompt; permission "prompt" on load shows Allow with the kept list, PENDING intact, Allow writes it; Allow refused says so; denied mid-session keeps the change, Allow writes it; an early add is merged, not overwriting; file gone shows the pick-again buttons, Forget refuses while unsaved, New file takes the kept links; Keep/Start empty both ways; Open my file reads a file with links without writing it; Open my file on non-JSON rolls back to try-it mode; cancelled picker does nothing; forget; no-picker browser note and try-it still works; no Google left in the page; import (board fixtures) into the file and into the browser; bookmarklet; the real IndexedDB store round-trips. By hand at 127.0.0.1:8812: sidebar text and both buttons present, no console messages, scrollWidth = innerWidth at 1024 and 375. README screenshot retaken (headless Chrome 1280x720, saved at 640x360).
+
+Manual check for Michal (the native file dialog can't be driven from the Browser pane):
+1. Open https://michalszyszka2-cmyk.github.io/my-links/ in Chrome or Edge: the three Examples show and the sidebar has "Keep it on this computer".
+2. Click it, save `My links.json` somewhere (Desktop is fine): the sidebar says "Kept on this computer as My links.json" and the list is empty.
+3. Paste a link and press Enter: "Added 1 link to Ungrouped." Open the file in Notepad: the link is inside.
+4. Reload the page: either the link is there at once, or the sidebar asks for one click on Allow and then it is.
+5. Optional: Import `D:\projects\board\pages\my-links\links.json` + `notes.json` (both in one pick) and check the file.
+
+Open questions: (1) Chrome may remember the permission between visits ("Allow on every visit") or ask every time; only his real test shows which. (2) The bookmarklet opens the github.io page in a new tab; that tab is the same origin, so the same file and permission apply.
+

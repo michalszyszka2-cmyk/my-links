@@ -2,14 +2,14 @@
 
 ![My links: folders on the left, saved links on the right](assets/screenshot.png)
 
-A plain bookmark page that keeps your links in your own Google Drive. Live at https://michalszyszka2-cmyk.github.io/my-links/
+A plain bookmark page that keeps your links in one file on your own computer. Live at https://michalszyszka2-cmyk.github.io/my-links/
 
 Folders sit on the left and links sit in rows on the right, like an inbox. Each link shows an icon, a name, a grey one-line description and the day it was added.
 
 ## How to use
 
-1. Open the page. Before you sign in it runs in try-it mode and keeps links in this browser only.
-2. Sign in with Google once to keep your list in your Drive.
+1. Open the page. Until you choose a file it runs in try-it mode and keeps links in this browser only.
+2. Click "Keep it on this computer" once and pick where to save `My links.json`.
 3. Paste a link into the box at the top and press Enter.
 4. Drag a link onto a folder to move it, or tick several to move or delete them together.
 5. Filter by date, sort newest or oldest first, and switch between light and dark with the button top right.
@@ -18,11 +18,13 @@ At the bottom of the sidebar there is a "Save this page" link. Drag it to your b
 
 ## Where your links live
 
-Your list is one file, `My links.json`, in your own Google Drive. The page finds it again by a hidden marker on the file. Nothing is stored on any server.
+Your list is one file, `My links.json`, saved wherever you put it on your computer. The page writes to it through the browser's own file picker and remembers which file you chose. On a later visit the browser asks once, with a click on "Allow", before the page may use the file again. Nothing is sent to any server, and there is no account to make.
 
-The page asks for Google's `drive.file` permission, which only lets it see files it created itself. It cannot read the rest of your Drive.
+This works in Chrome, Edge and Brave. Firefox and Safari cannot write files from a web page, so there the page stays in try-it mode and your links live in that browser.
 
-"Sign out" makes the browser forget you. The file in your Drive stays where it is.
+The file is plain, readable JSON. Put it in a folder that syncs between your computers (OneDrive, Dropbox, Google Drive's desktop app) and "Open my file" picks it up on the other machine.
+
+"Forget this file" makes the browser forget which file you chose. The file itself stays where it is.
 
 ## Run your own copy
 
@@ -30,10 +32,9 @@ There is no build step and there are no dependencies. The whole thing is one HTM
 
 1. Fork this repository.
 2. In the fork's settings, turn on GitHub Pages from the `main` branch.
-3. In Google Cloud, create your own OAuth web client and add your Pages address (for example `https://yourname.github.io`) as an authorised JavaScript origin.
-4. Paste its client ID into the `CLIENT_ID` constant near the top of `index.html`.
+3. Change the one address inside the "Save this page" bookmarklet in `index.html` to your own Pages address.
 
-[GOOGLE-SETUP.md](GOOGLE-SETUP.md) walks through the Google side step by step.
+Tests: open `test/file.test.html` from any local web server (for example `python -m http.server`). It runs the page against a fake disk, so no real file is touched.
 
 ## Licence
 

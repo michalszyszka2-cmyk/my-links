@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My links: fake-file test</title>
+<style>
+  body{margin:0;padding:16px;font:14px/1.5 system-ui,sans-serif;background:#faf8f4;color:#1f1d1a}
+  pre{white-space:pre-wrap}
+  .pass{color:#2f8a77}.fail{color:#b5482f;font-weight:600}
+  iframe{width:100%;height:420px;border:1px solid #e2ddd3;background:#fff}
+</style>
+</head>
+<body>
+<h1 style="font-size:18px">My links: the file-on-this-computer layer against a fake disk</h1>
+<p>Loads <code>../index.html</code> in an iframe with the browser's file pickers, file handles and the handle store stubbed, so no real file is touched.
+Needs a web server (file:// can't fetch). Your own try-it data in this browser is saved before the run and put back after.</p>
+<pre id="out">running…</pre>
+<div id="frames"></div>
+<script>
+const out = document.getElementById('out');
+const lines = [];
+let fails = 0;
+function log(ok, name, why){ lines.push((ok ? 'PASS ' : 'FAIL ') + name + (why ? ': ' + why : '')); if (!ok) fails++; out.innerHTML = lines.map(l => `<span class="${l.startsWith('PASS') ? 'pass' : 'fail'}">${l}</span>`).join('\n'); }
+function check(name, cond, why){ log(!!cond, name, cond ? '' : why); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function until(fn, ms = 4000){ const t = Date.now(); while (Date.now() - t < ms) { if (fn()) return true; await sleep(30); } return false; }
+
+// ---- the keys the app uses in this origin; saved and restored around the run ----
+const KEYS = ['mylinks.v1', 'mylinks.v1.file', 'board.v1.links.pending', 'board.v1.links.view', 'board.v1.links.when', 'board.v1.links.sort'];
+const saved = Object.fromEntries(KEYS.map(k => [k, localStorage.getItem(k)]));
+function reset(preset = {}){ KEYS.forEach(k => localStorage.removeItem(k)); Object.entries(preset).forEach(([k, v]) => localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v))); }
+function restore(){ KEYS.forEach(k => saved[k] === null ? localStorage.removeItem(k) : localStorage.setItem(k, saved[k])); }
+
+// ---- the fake disk: files by name (text), what the permission checks answer, every call made ----
+const disk = {files: {}, perm: 'granted', answer: 'granted', pickName: null, cancel: false, calls: []};
+const err = name => Object.assign(new Error(name), {name});
+function fakeHandle(name){
+  return {kind: 'file', name,
+    queryPermission: async () => { disk.calls.push('query ' + name); return disk.perm; },
+    requestPermission: async () => { disk.calls.push('request ' + name); return disk.perm = disk.answer; },
+    getFile: async () => { disk.calls.push('read ' + name); if (disk.perm !== 'granted') throw err('NotAllowedError'); if (!(name in disk.files)) throw err('NotFoundError'); return {text: async () => disk.files[name]}; },
+    createWritable: async () => { disk.calls.push('write ' + name); if (disk.perm !== 'granted') throw err('NotAllowedError'); if (!(name in disk.files)) throw err('NotFoundError'); let buf = ''; return {write: async t => { buf += t; }, close: async () => { disk.files[name] = buf; }}; },
+  };
+}
+async function fakeSave(o){ disk.calls.push('save-picker ' + (o && o.suggestedName)); if (disk.cancel) throw err('AbortError'); const n = disk.pickName || o.suggestedName; if (!(n in disk.files)) disk.files[n] = ''; return fakeHandle(n); }
+async function fakeOpen(){ disk.calls.push('open-picker'); if (disk.cancel) throw err('AbortError'); return [fakeHandle(disk.pickName)]; }
+// the fake handle store (stands in for IndexedDB)
+const fakeHandles = {h: null, get: async () => fakeHandles.h, set: async h => { fakeHandles.h = h; }, del: async () => { fakeHandles.h = null; }};
+window.fakeSave = fakeSave; window.fakeOpen = fakeOpen; window.fakeHandles = fakeHandles;
+const content = name => { const t = disk.files[name]; return t && t.trim() ? JSON.parse(t) : null; };
+const count = g => g.reduce((n, x) => n + x.links.length, 0);
+const inFile = name => { const c = content(name); return c ? count(c.groups) : 0; };
+
+// ---- the page under test, in an iframe, with the stubs in place ----
+let html = null;
+async function page(stubs = 'window.showSaveFilePicker = parent.fakeSave; window.showOpenFilePicker = parent.fakeOpen; window.fakeHandles = parent.fakeHandles;'){
+  if (!html) html = await (await fetch('../index.html')).text();
+  document.getElementById('frames').innerHTML = '';
+  const f = document.createElement('iframe');
+  f.srcdoc = html.replace('<head>', '<head><script>' + stubs + '<\/script>');
+  document.getElementById('frames').append(f);
+  await new Promise(r => f.onload = r);
+  await sleep(150);
+  const w = f.contentWindow, d = f.contentDocument;
+  return {w, d, $: id => d.getElementById(id), rows: () => [...d.querySelectorAll('#list li[data-i] .tt')].map(e => e.textContent), msg: () => d.getElementById('msg').textContent, app: () => w.mylinks, acc: () => d.getElementById('account').textContent};
+}
+const F = 'My links.json';
+
+async function run(){
+  // 1. try-it mode: samples
+  reset(); fakeHandles.h = null;
+  let p = await page();
+  check('try-it: three sample links in one folder "Examples"', p.rows().length === 3 && [...p.d.querySelectorAll('.fold .fn')].some(e => e.textContent === 'Examples'), `rows=${p.rows().length}`);
+  check('try-it: "Keep it on this computer" and "Open my file" buttons and the plain sentence are there', p.$('newFile') && p.$('openFile') && /one file, My links\.json, on this computer\. Nothing is stored anywhere else\./.test(p.acc()), p.acc());
+  check('try-it: nothing in localStorage yet (untouched samples are not written)', localStorage.getItem('mylinks.v1') === null);
+  p.$('paste').value = 'Mine https://mine.example/one'; p.$('addBtn').click();
+  await until(() => p.rows().length === 4);
+  check('try-it: adding a link keeps it in the browser', JSON.parse(localStorage.getItem('mylinks.v1')).groups.some(g => g.links.some(l => l.url === 'https://mine.example/one')));
+  p = await page();
+  check('try-it: reload keeps the link', p.rows().length === 4, `rows=${p.rows().length}`);
+
+  // 2. "Keep it on this computer" with untouched samples: the save picker, a new file, no question
+  reset(); fakeHandles.h = null; disk.files = {}; disk.calls = []; disk.perm = 'granted'; disk.pickName = null;
+  p = await page();
+  p.$('newFile').click();
+  await until(() => p.$('forget') && content(F));
+  check('new file: the save picker was opened with the name "My links.json" and a .json type', disk.calls.some(c => c === 'save-picker ' + F) && /\.json/.test(html.match(/const TYPES = .*/)[0]), disk.calls.join(' | '));
+  check('new file: the empty file is written once as {"groups": []}, never left blank', content(F) && Array.isArray(content(F).groups) && count(content(F).groups) === 0, JSON.stringify(disk.files));
+  check('new file: the handle is remembered in the store and the flag in localStorage', fakeHandles.h && fakeHandles.h.name === F && localStorage.getItem('mylinks.v1.file') === '1');
+  check('new file: untouched samples bring no keep/discard question', !/in this browser only/.test(p.msg()) && p.rows().length === 0, p.msg());
+  check('new file: says "Kept on this computer as My links.json" with a Forget button', /Kept on this computer as My links\.json/.test(p.acc()) && p.$('forget'), p.acc());
+  check('new file: the message names the file', /Your links now live in My links\.json on this computer\./.test(p.msg()), p.msg());
+
+  // 3. write then read round-trips
+  p.$('paste').value = 'Round trip https://round.example/trip'; p.$('addBtn').click();
+  await until(() => inFile(F) === 1);
+  check('write: every change writes the whole JSON to the file', content(F).groups[0].links[0].url === 'https://round.example/trip' && disk.calls.filter(c => c === 'write ' + F).length >= 2, JSON.stringify(content(F)));
+  check('write: the file is pretty-printed (one person can read it)', /\n  "groups"/.test(disk.files[F]));
+  check('write: PENDING cleared after a good write', localStorage.getItem('board.v1.links.pending') === null);
+  disk.calls = [];
+  p = await page();                                                    // reload: permission already granted, read from the file
+  await until(() => p.rows().length === 1);
+  check('read: reload loads the list from the file', p.rows().length === 1 && p.rows()[0] === 'Round trip', JSON.stringify(p.rows()));
+  check('read: the reload only queried permission, it did not prompt', disk.calls.some(c => /^query/.test(c)) && !disk.calls.some(c => /^request/.test(c)) && !disk.calls.some(c => /picker/.test(c)), disk.calls.join(' | '));
+
+  // 4. a fresh visit where the browser wants a click first: Allow button, the kept list on screen, PENDING intact
+  const keptBody = JSON.stringify({groups: [{name: '', links: [{title: 'Kept', url: 'https://kept.example/', icon: '🔗', added: '2026-10-29'}]}]});
+  reset({'mylinks.v1.file': '1', 'board.v1.links.pending': keptBody});
+  disk.perm = 'prompt'; disk.answer = 'granted'; disk.calls = [];
+  p = await page();
+  await until(() => p.$('allow') && /Allow/.test(p.msg()));
+  check('prompt: the Allow button shows and the page is not blank', p.$('allow') && p.rows()[0] === 'Kept' && /needs your OK to use My links\.json/.test(p.acc()), p.acc());
+  check('prompt: PENDING untouched', localStorage.getItem('board.v1.links.pending') === keptBody);
+  check('prompt: the message says to click Allow', /not in your file yet\. Click Allow to save them\./.test(p.msg()), p.msg());
+  check('prompt: no permission request without a click', !disk.calls.some(c => /^request/.test(c)), disk.calls.join(' | '));
+  p.$('allow').click();
+  await until(() => inFile(F) === 1 && content(F).groups[0].links[0].url === 'https://kept.example/');
+  check('Allow: asked for readwrite permission, then the kept list was written over the file (it was the full list)', disk.calls.some(c => /^request/.test(c)) && inFile(F) === 1 && content(F).groups[0].links[0].url === 'https://kept.example/' && localStorage.getItem('board.v1.links.pending') === null, JSON.stringify(content(F)));
+  check('Allow: says "Kept on this computer" again', /Kept on this computer/.test(p.acc()) && p.$('forget'));
+  // Allow refused: stays in the browser
+  reset({'mylinks.v1.file': '1'}); disk.perm = 'prompt'; disk.answer = 'denied';
+  p = await page();
+  await until(() => p.$('allow'));
+  p.$('allow').click();
+  await until(() => /Not allowed/.test(p.msg()));
+  check('Allow refused: says so, keeps the Allow button', /Not allowed, so your links stay in this browser until you allow My links\.json\./.test(p.msg()) && p.$('allow'), p.msg());
+
+  // 5. permission lost mid-session (the browser says no): the change is kept, Allow comes back, then Allow writes it
+  reset({'mylinks.v1.file': '1'}); disk.perm = 'granted'; disk.answer = 'granted';
+  p = await page();
+  await until(() => p.rows().length === 1);
+  disk.perm = 'denied';                                                 // the browser no longer lets the page touch the file
+  p.$('paste').value = 'Late https://late.example/'; p.$('addBtn').click();
+  await until(() => /allow access/.test(p.msg()));
+  check('denied: the message says the file updates once you allow access again', /Kept in this browser; the file updates once you allow access to the file again\./.test(p.msg()), p.msg());
+  check('denied: the list stays on screen with the new link', p.rows().length === 2, JSON.stringify(p.rows()));
+  check('denied: PENDING holds the full list', JSON.parse(localStorage.getItem('board.v1.links.pending') || '{}').groups?.some(g => g.links.some(l => l.url === 'https://late.example/')));
+  check('denied: the Allow button is back', p.$('allow') && !p.$('allow').disabled);
+  check('denied: the file was not touched', inFile(F) === 1);
+  disk.answer = 'granted';
+  p.$('allow').click();
+  await until(() => inFile(F) === 2);
+  check('denied then Allow: the kept change is written to the file', inFile(F) === 2 && localStorage.getItem('board.v1.links.pending') === null, JSON.stringify(content(F)));
+
+  // 6. a link added before the file was readable is an addition, not the whole file
+  reset({'mylinks.v1.file': '1'}); disk.perm = 'prompt';
+  p = await page();
+  await until(() => p.$('allow'));
+  p.$('paste').value = 'Offline https://offline.example/'; p.$('addBtn').click();
+  await until(() => /allow access/.test(p.msg()));
+  check('early add: kept as a partial list', JSON.parse(localStorage.getItem('board.v1.links.pending')).partial === true);
+  p.$('allow').click();
+  await until(() => inFile(F) === 3);
+  check('early add then Allow: merged into the file, nothing overwritten', inFile(F) === 3 && content(F).groups.some(g => g.links.some(l => l.url === 'https://offline.example/')) && content(F).groups.some(g => g.links.some(l => l.url === 'https://kept.example/')), JSON.stringify(content(F)));
+
+  // 7. the file is gone: the change is kept, the pick-again buttons show, "New file" takes the kept links with it
+  disk.perm = 'granted';
+  p = await page();
+  await until(() => p.rows().length === 3);
+  delete disk.files[F];
+  p.$('paste').value = 'Gone https://gone.example/'; p.$('addBtn').click();
+  await until(() => /pick the file again/.test(p.msg()));
+  check('gone: the message says the file updates once you pick it again', /Kept in this browser; the file updates once you pick the file again\./.test(p.msg()), p.msg());
+  check('gone: the sidebar offers Open my file, New file and Forget', /moved or is gone/.test(p.acc()) && p.$('openFile') && p.$('newFile') && p.$('forget'), p.acc());
+  check('gone: Forget refuses while a change is unsaved', (p.$('forget').click(), await until(() => /Not forgotten/.test(p.msg()))) && localStorage.getItem('mylinks.v1.file') === '1', p.msg());
+  disk.pickName = 'Links again.json';
+  p.$('newFile').click();
+  await until(() => inFile('Links again.json') === 4);
+  check('gone then New file: the four links land in the new file and it is remembered', inFile('Links again.json') === 4 && fakeHandles.h.name === 'Links again.json' && localStorage.getItem('board.v1.links.pending') === null, JSON.stringify(Object.keys(disk.files)));
+  check('gone then New file: the sidebar names the new file', /Kept on this computer as Links again\.json/.test(p.acc()), p.acc());
+
+  // 8. try-it data worth keeping: the question, Keep / Start empty
+  const mine = {groups: [{name: 'Work', links: [{title: 'Mine', url: 'https://mine.example/two', icon: '🔗', added: '2026-10-29', note: 'kept'}]}]};
+  reset({'mylinks.v1': mine}); fakeHandles.h = null; disk.files = {}; disk.pickName = null;
+  p = await page();
+  p.$('newFile').click();
+  await until(() => /in this browser only/.test(p.msg()));
+  const btns = [...p.d.querySelectorAll('#msg button')].map(b => b.textContent);
+  check('try-it data: the question appears in #msg with the two buttons', btns.join('/') === 'Keep these links/Start empty', btns.join('/'));
+  check('try-it data: no window.confirm in the page', !/window\.confirm|[^.\w]confirm\(/.test(html));
+  p.d.querySelectorAll('#msg button')[0].click();
+  await until(() => inFile(F) === 1);
+  check('Keep these links: the link lands in the file in its folder with its note', content(F).groups.some(g => g.name === 'Work' && g.links[0].url === 'https://mine.example/two' && g.links[0].note === 'kept'), JSON.stringify(content(F)));
+  check('Keep these links: the browser copy is cleared', localStorage.getItem('mylinks.v1') === null);
+  reset({'mylinks.v1': mine}); fakeHandles.h = null; disk.files = {};
+  p = await page();
+  p.$('newFile').click();
+  await until(() => /in this browser only/.test(p.msg()));
+  p.d.querySelectorAll('#msg button')[1].click();
+  await until(() => content(F));
+  check('Start empty: the file holds an empty list and the browser copy is cleared', inFile(F) === 0 && localStorage.getItem('mylinks.v1') === null && p.rows().length === 0, disk.files[F]);
+  // "Open my file" on a file made before, with links in it, from untouched samples
+  reset(); fakeHandles.h = null; disk.files = {'Old links.json': JSON.stringify({groups: [{name: 'Old', links: [{title: 'Old one', url: 'https://old.example/', icon: '🔗', added: '2026-10-01'}]}]})}; disk.pickName = 'Old links.json'; disk.calls = [];
+  p = await page();
+  p.$('openFile').click();
+  await until(() => p.rows().length === 1);
+  check('Open my file: the open picker, the list from that file, remembered by name', disk.calls.some(c => c === 'open-picker') && p.rows()[0] === 'Old one' && fakeHandles.h.name === 'Old links.json' && /Kept on this computer as Old links\.json/.test(p.acc()), p.acc());
+  check('Open my file: a file with links in it is not written over', inFile('Old links.json') === 1 && !disk.calls.some(c => /^write/.test(c)), disk.calls.join(' | '));
+  // "Open my file" on something that is not a links file: back to try-it, nothing lost
+  reset({'mylinks.v1': mine}); fakeHandles.h = null; disk.files = {'notes.txt': 'just text'}; disk.pickName = 'notes.txt';
+  p = await page();
+  p.$('openFile').click();
+  await until(() => /Couldn't read/.test(p.msg()));
+  check('Open my file, not JSON: says so, stays in try-it mode with the browser links', /Couldn't read notes\.txt \(notes\.txt is readable JSON again\)\. Your links stay in this browser for now\./.test(p.msg()) && localStorage.getItem('mylinks.v1.file') === null && fakeHandles.h === null && p.rows().length === 1 && p.$('newFile'), p.msg());
+  // the picker cancelled: nothing happens
+  disk.cancel = true;
+  p.$('newFile').click(); await sleep(100);
+  check('picker cancelled: nothing changes, no message', localStorage.getItem('mylinks.v1.file') === null && !/Couldn't open/.test(p.msg()), p.msg());
+  disk.cancel = false;
+
+  // 9. forget: back to try-it mode, the file untouched
+  reset(); fakeHandles.h = null; disk.files = {}; disk.pickName = null;
+  p = await page();
+  p.$('newFile').click();
+  await until(() => p.$('forget'));
+  p.$('paste').value = 'Before out https://out.example/'; p.$('addBtn').click();
+  await until(() => inFile(F) === 1);
+  p.$('forget').click();
+  await until(() => /Forgotten/.test(p.msg()));
+  check('forget: forgets the flag and the handle', localStorage.getItem('mylinks.v1.file') === null && fakeHandles.h === null);
+  check('forget: the samples are back and the two buttons too', p.rows().length === 3 && p.$('newFile') && !p.$('forget'), JSON.stringify(p.rows()));
+  check('forget: the file still exists with its link', inFile(F) === 1);
+  check('forget: the handle is gone from memory', p.app().handle === null);
+
+  // 10. a browser without the file picker (Firefox, Safari): the note, no buttons, try-it still works
+  reset(); fakeHandles.h = null;
+  p = await page('window.showSaveFilePicker = undefined; window.fakeHandles = parent.fakeHandles;');
+  check('no picker: the note says this browser can\'t save a file and names the ones that can', /This browser can't save a file on your computer \(Chrome, Edge and Brave can\), so your links stay in this browser\./.test(p.acc()) && !p.$('newFile') && !p.$('openFile'), p.acc());
+  check('no picker: the page still works in try-it mode', p.rows().length === 3);
+  p.$('paste').value = 'Still https://still.example/'; p.$('addBtn').click();
+  await until(() => p.rows().length === 4);
+  check('no picker: adding a link keeps it in the browser', JSON.parse(localStorage.getItem('mylinks.v1')).groups.some(g => g.links.some(l => l.url === 'https://still.example/')));
+
+  // 11. nothing of Google is left
+  check('no Google: no client ID, no Drive URL, no gsi script in the page', !/googleapis\.com\/drive|accounts\.google\.com|CLIENT_ID|drive\.file/.test(html));
+  check('wording: "this browser has no room to store it"', /this browser has no room to store it/.test(html) && !/has room to store it/.test(html.replace(/no room to store it/g, '')));
+
+  // 12. import from the board copy: made-up links.json + notes.json with the same shape and counts as the board files (20 links, 7 groups, one duplicate page, 18 notes)
+  const fxLinks = await (await fetch('fixtures/links.json')).text(), fxNotes = await (await fetch('fixtures/notes.json')).text();
+  const fx = JSON.parse(fxLinks), fxN = JSON.parse(fxNotes), fxAll = fx.flatMap(g => g.links);
+  const board = u => /^\/(pages|files)\//.test(u) ? 'http://localhost:4420' + u : u;
+  const fxUrls = new Set(fxAll.map(l => board(l.url)));
+  check(`fixture: ${fxAll.length} links in ${fx.length} groups, ${fx.filter(g => g.links.length).length} with links; ${fxUrls.size} distinct URLs once /pages/ and /files/ point at localhost:4420`, fxAll.length === 20 && fx.length === 7 && fx.filter(g => g.links.length).length === 6 && fxUrls.size === 19);
+  // picks files through the real Import control (the file input's change event)
+  const pick = async (p, names) => {
+    const dt = new p.w.DataTransfer();
+    names.forEach(([n, t]) => dt.items.add(new p.w.File([t], n, {type: 'application/json'})));
+    p.$('importFile').files = dt.files;
+    p.$('importFile').dispatchEvent(new p.w.Event('change'));
+  };
+  const linksOf = gs => gs.flatMap(g => g.links);
+  reset(); fakeHandles.h = null; disk.files = {}; disk.calls = []; disk.pickName = null;
+  p = await page();
+  check('import: the Import button and its file picker are in the sidebar', p.d.querySelector('#side #importBtn') && p.$('importFile').type === 'file' && p.$('importFile').multiple);
+  p.$('newFile').click();
+  await until(() => p.$('forget') && content(F));
+  await pick(p, [['links.json', fxLinks], ['notes.json', fxNotes]]);
+  await until(() => /^Imported/.test(p.msg()) && inFile(F) > 0);
+  const got = content(F).groups, gotL = linksOf(got);
+  check('import: message "Imported 19 links into 6 folders, skipped 1 already here."', p.msg() === 'Imported 19 links into 6 folders, skipped 1 already here.', p.msg());
+  check('import: 19 links in the file (20 in the board; two are the same page once /files/ is rewritten)', gotL.length === 19 && linksOf(p.app().groups).length === 19, gotL.length);
+  check('import: the 6 named folders are there by name, in order', JSON.stringify(got.filter(g => g.links.length).map(g => g.name)) === JSON.stringify(fx.filter(g => g.links.length).map(g => g.name)), JSON.stringify(got.map(g => g.name)));
+  check('import: zero URLs starting with /', gotL.every(l => !l.url.startsWith('/')), gotL.filter(l => l.url.startsWith('/')).map(l => l.url).join(' '));
+  check('import: every board URL is in, /pages/ and /files/ now at http://localhost:4420', [...fxUrls].every(u => gotL.some(l => l.url === u)) && gotL.some(l => l.url === 'http://localhost:4420/pages/portfolio/'));
+  const attached = fxAll.filter(l => !('note' in l) && fxN[l.url]);
+  check(`import: notes.json attached to the ${attached.length} links with no note of their own`, attached.length === 18 && attached.every(l => gotL.find(x => x.url === board(l.url)).note === fxN[l.url]));
+  const own = fxAll.find(l => l.url.startsWith('/files/'));
+  check("import: a link's own note wins over notes.json", gotL.find(x => x.url === board(own.url)).note === own.note && own.note !== fxN[own.url]);
+  check('import: titles, icons and dates kept', fxAll.filter(l => !l.url.startsWith('http://localhost:4420/files/')).every(l => gotL.some(x => x.title === l.title && x.icon === l.icon && x.added === l.added)));
+  check('import: went through save (written to the file, PENDING cleared)', disk.calls.some(c => c === 'write ' + F) && localStorage.getItem('board.v1.links.pending') === null);
+  disk.calls = [];
+  await pick(p, [['links.json', fxLinks], ['notes.json', fxNotes]]);
+  await until(() => /skipped 20/.test(p.msg()));
+  check('import again: skips everything', p.msg() === 'Imported 0 links into 0 folders, skipped 20 already here.' && linksOf(content(F).groups).length === 19, p.msg());
+  check('import again: nothing written', !disk.calls.some(c => /^write/.test(c)), disk.calls.join(' | '));
+  // try-it mode: the same import lands in this browser
+  reset({'mylinks.v1': {groups: []}}); fakeHandles.h = null;
+  p = await page();
+  await pick(p, [['links.json', fxLinks]]);
+  await until(() => /^Imported/.test(p.msg()));
+  const loc = linksOf(JSON.parse(localStorage.getItem('mylinks.v1')).groups);
+  check('import, try-it mode: lands in this browser; links.json alone works', loc.length === 19 && p.msg() === 'Imported 19 links into 6 folders, skipped 1 already here.', p.msg());
+  check("import, try-it mode, no notes.json: only the links' own notes", loc.filter(l => l.note).length === 1);
+  // the older flat shape {links: [...]}
+  reset({'mylinks.v1': {groups: []}});
+  p = await page();
+  await pick(p, [['links.json', JSON.stringify({links: [{title: 'Flat', url: '/pages/flat/'}]})]]);
+  await until(() => /^Imported/.test(p.msg()));
+  check('import: the older flat {links: [...]} goes into Ungrouped', p.msg() === 'Imported 1 link into 1 folder, skipped 0 already here.' && JSON.parse(localStorage.getItem('mylinks.v1')).groups.some(g => g.name === '' && g.links[0] && g.links[0].url === 'http://localhost:4420/pages/flat/'), p.msg());
+  await pick(p, [['notes.json', fxNotes]]);
+  await sleep(150);
+  check('import: notes.json on its own asks for links.json', /Pick links\.json too/.test(p.msg()), p.msg());
+
+  // 13. bookmarklet: the link, and ?add= pre-fills the paste box
+  const bm = p.$('bookmarklet');
+  check('bookmarklet: "Save this page" opens the github.io page with ?add= and &title= in a new tab', bm && bm.textContent === 'Save this page' && bm.getAttribute('href').startsWith('javascript:') && bm.getAttribute('href').includes("open('https://michalszyszka2-cmyk.github.io/my-links/?add='+encodeURIComponent(location.href)+'&title='+encodeURIComponent(document.title),'_blank')"), bm && bm.getAttribute('href'));
+  check('bookmarklet: the one-line instruction is next to it', /Drag this to your bookmarks bar\. Click it on any page to save that page here\./.test(p.$('tools').textContent));
+  reset();
+  document.getElementById('frames').innerHTML = '';
+  const bf = document.createElement('iframe'); bf.src = '../index.html?add=https%3A%2F%2Fexample.org&title=Example%20Org'; document.getElementById('frames').append(bf);
+  await new Promise(r => bf.onload = r); await sleep(150);
+  const bd = bf.contentDocument;
+  check('?add=: the paste box holds "Example Org https://example.org"', bd.getElementById('paste').value === 'Example Org https://example.org', bd.getElementById('paste').value);
+  check('?add=: the box has focus', bd.activeElement === bd.getElementById('paste'));
+  check('?add=: the address bar is cleaned', bf.contentWindow.location.search === '' && /\/index\.html$/.test(bf.contentWindow.location.pathname), bf.contentWindow.location.href);
+  check('?add=: nothing added until Enter', bd.querySelectorAll('#list li[data-i]').length === 3);
+  bd.getElementById('paste').dispatchEvent(new bf.contentWindow.KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
+  await sleep(150);
+  check('?add=: Enter adds the row', [...bd.querySelectorAll('#list li[data-i] .tt')].some(e => e.textContent === 'Example Org') && /Added 1 link to Ungrouped/.test(bd.getElementById('msg').textContent), bd.getElementById('msg').textContent);
+  check('?add=: saved in this browser (try-it mode)', JSON.parse(localStorage.getItem('mylinks.v1')).groups.some(g => g.links.some(l => l.url === 'https://example.org' && l.title === 'Example Org')));
+
+  // 14. the real handle store (IndexedDB) round-trips a value in this browser
+  const real = (await page('window.showSaveFilePicker = parent.fakeSave; window.showOpenFilePicker = parent.fakeOpen;')).app().handles;
+  await real.set({kind: 'probe', name: 'probe.json'});
+  const back = await real.get();
+  await real.del();
+  check('IndexedDB store: set, get and del round-trip', back && back.name === 'probe.json' && (await real.get()) === undefined, JSON.stringify(back));
+}
+run().catch(e => log(false, 'harness error', e.stack || e.message)).finally(() => {
+  restore();
+  lines.push(`\n${lines.filter(l => l.startsWith('PASS')).length} passed, ${fails} failed`);
+  out.innerHTML = lines.map(l => `<span class="${l.startsWith('FAIL') ? 'fail' : l.startsWith('PASS') ? 'pass' : ''}">${l}</span>`).join('\n');
+  document.title = (fails ? 'FAIL ' : 'PASS ') + 'My links fake-file test';
+});
+</script>
+</body>
+</html>
