@@ -14,7 +14,7 @@ Folders sit on the left and links sit in rows on the right, like an inbox. Each 
 4. Drag a link onto a folder to move it, or tick several to move or delete them together.
 5. Filter by date, sort newest or oldest first, and switch between light and dark with the button top right.
 
-A "Save this page" bookmarklet, which you drag to your bookmarks bar, is coming in the same release.
+At the bottom of the sidebar there is a "Save this page" link. Drag it to your bookmarks bar and click it on any page to save that page here. The Import button next to it reads a links.json from the board version.
 
 ## Where your links live
 

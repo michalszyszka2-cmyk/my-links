@@ -1,0 +1,157 @@
+[
+ {
+  "name": "",
+  "links": []
+ },
+ {
+  "name": "Reading",
+  "links": [
+   {
+    "title": "Sample link 1",
+    "url": "https://example.com/a1",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   },
+   {
+    "title": "Sample link 2",
+    "url": "https://example.com/a2",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   },
+   {
+    "title": "Sample link 3",
+    "url": "https://example.com/a3",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   },
+   {
+    "title": "Sample link 4",
+    "url": "https://example.com/a4",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   }
+  ]
+ },
+ {
+  "name": "Tools",
+  "links": [
+   {
+    "title": "Sample link 5",
+    "url": "https://example.com/b1",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   },
+   {
+    "title": "Sample link 6",
+    "url": "https://example.com/b2",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   },
+   {
+    "title": "Sample link 7",
+    "url": "https://example.com/b3",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   }
+  ]
+ },
+ {
+  "name": "People",
+  "links": [
+   {
+    "title": "Sample link 8",
+    "url": "https://example.com/c1",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   }
+  ]
+ },
+ {
+  "name": "Research",
+  "links": [
+   {
+    "title": "Sample link 9",
+    "url": "/files/research/one/index.html",
+    "icon": "🔗",
+    "added": "2026-10-29",
+    "note": "Its own note, which wins."
+   },
+   {
+    "title": "Sample link 10",
+    "url": "http://localhost:4420/files/research/one/index.html",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   },
+   {
+    "title": "Sample link 11",
+    "url": "/pages/portfolio/",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   },
+   {
+    "title": "Sample link 12",
+    "url": "/pages/three/",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   },
+   {
+    "title": "Sample link 13",
+    "url": "/pages/four/",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   },
+   {
+    "title": "Sample link 14",
+    "url": "/pages/five/",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   },
+   {
+    "title": "Sample link 15",
+    "url": "/pages/six/",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   },
+   {
+    "title": "Sample link 16",
+    "url": "/pages/seven/",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   },
+   {
+    "title": "Sample link 17",
+    "url": "/pages/eight/",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   }
+  ]
+ },
+ {
+  "name": "Brand",
+  "links": [
+   {
+    "title": "Sample link 18",
+    "url": "https://example.org/brand",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   },
+   {
+    "title": "Sample link 19",
+    "url": "/pages/logo/",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   }
+  ]
+ },
+ {
+  "name": "Travel",
+  "links": [
+   {
+    "title": "Sample link 20",
+    "url": "/pages/trip/",
+    "icon": "🔗",
+    "added": "2026-10-29"
+   }
+  ]
+ }
+]

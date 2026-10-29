@@ -49,6 +49,11 @@
   #account b{color:var(--ink);font-weight:500}
   #account button{margin:0 6px 6px 0}
   #account .ok{color:var(--accent)}
+  #tools{margin:14px 10px 0 14px;font-size:13px;color:var(--muted);line-height:1.45}
+  #tools p{margin:0 0 8px}
+  #tools button{margin:0 6px 6px 0}
+  #tools .bm{display:inline-block;margin:10px 0 6px;font-size:13px;color:var(--ink);background:var(--panel);border:1px solid var(--rule);border-radius:4px;padding:4px 10px;text-decoration:none;cursor:grab}
+  #tools .bm:hover{background:var(--hover)}
 
   #main{padding:14px 20px 32px 8px;min-width:0}
   .add{display:flex;gap:8px;margin:0 56px 10px 0}
@@ -119,6 +124,12 @@
   <button id="addOpen"><span>+</span> Add a link</button>
   <div id="folders"></div>
   <div id="account" aria-label="Google sign-in"></div>
+  <div id="tools">
+    <button id="importBtn" title="Bring in links.json (and notes.json) from the board copy">Import</button>
+    <input type="file" id="importFile" accept=".json,application/json" multiple hidden>
+    <br><a class="bm" id="bookmarklet" href="javascript:(()=>{open('https://michalszyszka2-cmyk.github.io/my-links/?add='+encodeURIComponent(location.href)+'&amp;title='+encodeURIComponent(document.title),'_blank')})()" title="Drag me to your bookmarks bar">Save this page</a>
+    <p>Drag this to your bookmarks bar. Click it on any page to save that page here.</p>
+  </div>
 </nav>
 <main id="main">
   <div class="add">
@@ -581,19 +592,72 @@ function ask(text, choices){
 const pending = () => { const t = localStorage.getItem(PENDING); return t ? JSON.parse(t) : null; };
 const setGroups = g => { groups = g && g.length ? g : [{name: '', links: []}]; picked.clear(); };
 // adds the links of `from` to `groups`, folder by folder, skipping URLs already there; returns how many went in
-function merge(from){
+function merge(from, folders){
   const have = new Set(groups.flatMap(g => g.links.map(l => l.url)));
   let n = 0;
   for (const g of from) {
-    const ls = g.links.filter(l => !have.has(l.url));
+    const ls = g.links.filter(l => !have.has(l.url) && have.add(l.url));   // also skips a URL twice in one folder
     if (!ls.length) continue;
     let gi = groups.findIndex(x => x.name === g.name);
     if (gi < 0) { if (g.name) { groups.push({name: g.name, links: []}); gi = groups.length - 1; } else gi = loose(); }
     groups[gi].links.push(...ls);
-    ls.forEach(l => have.add(l.url));
+    if (folders) folders.add(gi);
     n += ls.length;
   }
   return n;
+}
+
+// import from the board copy: its links.json ([{name, links}] or the older {links: [...]}) and, optionally,
+// its notes.json ({url: note}). Notes go onto links with no description of their own (as noteOf() did),
+// board-relative /pages/ and /files/ URLs point back at the board on this PC, then the links merge in.
+const BOARD = 'http://localhost:4420';
+function importGroups(data, notesBy = {}){
+  const gs = Array.isArray(data) ? (data.length && !('links' in data[0]) ? [{name: '', links: data}] : data)
+    : data && Array.isArray(data.links) ? [{name: '', links: data.links}] : null;
+  if (!gs) return null;
+  return gs.map(g => ({name: g.name || '', links: (g.links || []).filter(l => l && l.url).map(l => {
+    const out = {...l, title: l.title || l.url, icon: l.icon || '🔗'};
+    if (!('note' in out) && notesBy[l.url]) out.note = notesBy[l.url];
+    if (/^\/(pages|files)\//.test(out.url)) out.url = BOARD + out.url;
+    return out;
+  })}));
+}
+function importLinks(data, notesBy){
+  const from = importGroups(data, notesBy);
+  if (!from) return null;
+  const all = from.reduce((k, g) => k + g.links.length, 0), folders = new Set();
+  const n = merge(from, folders);
+  picked.clear();
+  if (!n) render();
+  return {n, folders: folders.size, skipped: all - n};
+}
+async function importFiles(files){
+  let data = null, notesBy = {};
+  try {
+    for (const f of files) {
+      const j = JSON.parse(await f.text());
+      if (Array.isArray(j) || (j && Array.isArray(j.links))) data = j;
+      else if (j && typeof j === 'object' && Object.values(j).every(v => typeof v === 'string')) notesBy = j;
+    }
+  } catch { return say("Couldn't read that file. Pick the board's links.json (and notes.json if you have it).", true); }
+  if (!data) return say('Pick links.json too; notes.json on its own has no links to bring in.', true);
+  const r = importLinks(data, notesBy);
+  if (!r) return say("That links.json isn't in a shape this page knows.", true);
+  const text = `Imported ${plural(r.n, 'link')} into ${plural(r.folders, 'folder')}, skipped ${r.skipped} already here.`;
+  return r.n ? save(text) : say(text);
+}
+$('importBtn').onclick = () => $('importFile').click();
+$('importFile').onchange = e => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) importFiles(fs); };
+
+// the bookmarklet opens this page with ?add=<url>&title=<title>: put them in the paste box, Enter adds them
+function fromBookmarklet(){
+  const q = new URLSearchParams(location.search), url = q.get('add');
+  if (url === null) return;
+  const title = (q.get('title') || '').replace(/\s+/g, ' ').trim();
+  $('paste').value = (title && title !== url ? title + ' ' : '') + url.trim();
+  q.delete('add'); q.delete('title');
+  history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q : '') + location.hash);
+  $('paste').focus();
 }
 
 // the sign-in block under the folders
@@ -691,9 +755,10 @@ async function boot(){
   render(); account();
   if (kept) { say('Changes kept in this browser are not saved yet; trying again.', true); sync(); }
 }
+fromBookmarklet();
 boot().catch(() => say("Couldn't load the links.", true));
 // for the fake-Drive test in test/drive.test.html
-window.mylinks = {get groups(){ return groups; }, get token(){ return token; }, signIn, signOut, add, save, justSamples, SAMPLES};
+window.mylinks = {get groups(){ return groups; }, get token(){ return token; }, signIn, signOut, add, save, justSamples, SAMPLES, importLinks, importFiles};
 </script>
 </body>
 </html>

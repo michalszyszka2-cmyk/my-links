@@ -32,33 +32,33 @@ Open questions: (1) whether Google lets the silent `prompt: ''` token request op
 
 ## C. Import from the board copy
 
-Status: pending
+Status: built and tested, awaiting acceptance (29 Oct 2026)
 
-What changed:
+What changed: index.html has a `#tools` block under `#account` in the sidebar with an "Import" button (existing button style) and a hidden file input (`.json`, multiple). Pick the board's `links.json` and, optionally, `notes.json` (each file is told apart by its shape, not its name). `importGroups()` accepts `[{name, links}]`, the older `{links: [...]}` and a bare list of links; a notes.json note goes onto a link only when the link has no `note` of its own (as `noteOf()` did); a URL starting `/pages/` or `/files/` becomes `http://localhost:4420` + that path (after the note lookup, so notes keyed by the relative URL still match). Then the existing `merge()` adds folders by name and skips URLs already present, and `save()` writes it the normal way (Drive file when signed in, this browser when not). Message: "Imported N links into M folders, skipped K already here." When nothing is new it only says so and writes nothing. Bug fixed in `merge()` (from B): two links with the same URL in one folder were both added; now the second is skipped. `test/fixtures/links.json` and `notes.json` are copies of the board files as of 29 Oct 2026.
 
-Tested:
+Tested: section 11 of `test/drive.test.html` feeds the real fixture files through the real file input (change event) at http://localhost:8811/test/drive.test.html; whole suite 67 passed, 0 failed. The fixture holds 20 links (not 21) in 7 groups, 6 of them with links (the unfiled group is empty). Two of them are the same page once rewritten (`/files/hq/research/yt-BQJRLZ2q_Ns/index.html#sC` and `http://localhost:4420/files/hq/research/yt-BQJRLZ2q_Ns/index.html#sC`, both in "Selling AI: research"), so the result is "Imported 19 links into 6 folders, skipped 1 already here." Checked: 19 links in the fake Drive file and on screen; the 6 folder names in board order; zero URLs starting with `/`; every board URL present at its localhost:4420 form; notes.json attached to all 18 links with no note of their own; the first yt link keeps its own note over notes.json's; titles, icons and dates kept; written by PATCH, PENDING cleared; a second import says "Imported 0 links into 0 folders, skipped 20 already here." and writes nothing; signed out it lands in browser storage; links.json alone works; the flat `{links}` shape goes into Ungrouped; notes.json alone asks for links.json.
 
-Open questions:
+Open questions: (1) The duplicate yt link: the kept one is titled "yt-BQJRLZ2q_Ns/index.html" with note "Which of Nate Herk's four systems to sell first"; the dropped one had "Nate Herk's 4 Claude systems, every detail". Michal may want to rename the kept one after import. (2) The brief's "21 links" is 20 in the file on 29 Oct.
 
 ## D. Bookmarklet
 
-Status: pending
+Status: built and tested, awaiting acceptance (29 Oct 2026)
 
-What changed:
+What changed: in the same `#tools` block, below Import: a "Save this page" link (button look, existing tokens) whose href is `javascript:(()=>{open('https://michalszyszka2-cmyk.github.io/my-links/?add='+encodeURIComponent(location.href)+'&title='+encodeURIComponent(document.title),'_blank')})()`, and the line "Drag this to your bookmarks bar. Click it on any page to save that page here." On load, `fromBookmarklet()` reads `?add=` and `&title=`, puts `title + ' ' + url` in `#paste` (just the URL when there is no title or the title is the URL), removes both parameters with `history.replaceState` (keeps any others and the hash) and focuses the box. Nothing is added until Enter, which runs the existing `add()`/`parse()`.
 
-Tested:
+Tested: section 12 of `test/drive.test.html` (in the 67 passes): the href and the instruction line; an iframe on `../index.html?add=https%3A%2F%2Fexample.org&title=Example%20Org` has "Example Org https://example.org" in the box, the box focused, `location.search` empty, still 3 rows; Enter adds "Example Org" ("Added 1 link to Ungrouped.") and it is in browser storage. By hand in the Browser pane at http://localhost:8811/?add=https%3A%2F%2Fexample.org&title=Example%20Org: address bar became http://localhost:8811/, box pre-filled and focused, a real Enter key press added the row, no console messages. At 390 wide scrollWidth = innerWidth = 390 in light and dark; the bookmarklet link takes the panel/ink tokens in both themes (screenshot at half scale, light).
 
-Open questions:
+Open questions: (1) The bookmarklet always opens the github.io address, also on a local copy or a fork; a self-hoster would need to change that one URL (README stream may want to say so). (2) Dragging it to a real bookmarks bar and clicking it on another site was not tested here (needs a person's browser); the test covers what happens when that URL opens.
 
 ## E. README
 
-Status: pending
+Status: done
 
-What changed:
+What changed: wrote README.md (screenshot, pitch, How to use, Where your links live, Run your own copy, Licence; 41 lines). Added assets/screenshot.png (headless Chromium, file:// copy, light theme, 1280x720 at 0.5 scale, three example links pasted).
 
-Tested:
+Tested: screenshot viewed and shows folders plus link rows; README links point at GOOGLE-SETUP.md and LICENSE, both present.
 
-Open questions:
+Open questions: screenshot shows the 'Google not connected yet' sidebar note because CLIENT_ID is still the placeholder; retake after G if wanted.
 
 ## F. Portfolio entry, DRAFT ONLY
 
