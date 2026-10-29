@@ -5,13 +5,13 @@ Every stream reads this file before starting and writes its result under its own
 
 ## A. Scaffold
 
-Status: done
+Status: done (accepted 29 Oct 2026)
 
-What changed:
+What changed: new repo, index.html copied from the board page with the save/load, local-file and agent-panel code removed; `store` stub on localStorage key `mylinks.v1`; .gitignore, MIT LICENSE, this file. Public repo michalszyszka2-cmyk/my-links, GitHub Pages from main.
 
-Tested:
+Tested: grep for api/links, /files/, agent-embed, localhost:4420, links.json, notes.json returns nothing. https://michalszyszka2-cmyk.github.io/my-links/ returns 200. In the browser: pasted `Example https://example.com` + Enter → one row, message "Added 1 link to Ungrouped."; reload → row still there ("All links · 1"); theme button switches to dark; no console errors.
 
-Open questions:
+Open questions: none. Departures: a pasted Windows path now says "That doesn't look like a link." (was a /files/ link); four comments reworded; board.v1.* localStorage keys kept.
 
 ## B. Google Drive storage layer
 
