@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My links: fake-Drive test</title>
+<style>
+  body{margin:0;padding:16px;font:14px/1.5 system-ui,sans-serif;background:#faf8f4;color:#1f1d1a}
+  pre{white-space:pre-wrap}
+  .pass{color:#2f8a77}.fail{color:#b5482f;font-weight:600}
+  iframe{width:100%;height:420px;border:1px solid #e2ddd3;background:#fff}
+</style>
+</head>
+<body>
+<h1 style="font-size:18px">My links: Google Drive sync against a fake Drive</h1>
+<p>Loads <code>../index.html</code> in iframes with Google's sign-in and the Drive API stubbed, so nothing reaches Google. Two pages in a row with their storage swapped stand in for a phone and a computer.
+Needs a web server. Your own data in this browser is saved before the run and put back after.</p>
+<pre id="out">running…</pre>
+<div id="frames"></div>
+<script>
+const out = document.getElementById('out');
+const lines = [];
+let fails = 0;
+function log(ok, name, why){ lines.push((ok ? 'PASS ' : 'FAIL ') + name + (why ? ': ' + why : '')); if (!ok) fails++; out.innerHTML = lines.map(l => `<span class="${l.startsWith('PASS') ? 'pass' : 'fail'}">${l}</span>`).join('\n'); }
+function check(name, cond, why){ log(!!cond, name, cond ? '' : why); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function until(fn, ms = 4000){ const t = Date.now(); while (Date.now() - t < ms) { if (fn()) return true; await sleep(30); } return false; }
+
+// ---- each "device" is its own copy of the app's storage, swapped into this origin while its page runs ----
+const wipe = () => { Object.keys(localStorage).filter(k => /^(mylinks|board\.v1)/.test(k)).forEach(k => localStorage.removeItem(k)); Object.keys(sessionStorage).filter(k => /^mylinks/.test(k)).forEach(k => sessionStorage.removeItem(k)); };
+const dump = () => ({l: Object.fromEntries(Object.keys(localStorage).filter(k => /^(mylinks|board\.v1)/.test(k)).map(k => [k, localStorage.getItem(k)])), s: Object.fromEntries(Object.keys(sessionStorage).filter(k => /^mylinks/.test(k)).map(k => [k, sessionStorage.getItem(k)]))});
+const fill = d => { wipe(); Object.entries(d.l).forEach(([k, v]) => localStorage.setItem(k, v)); Object.entries(d.s).forEach(([k, v]) => sessionStorage.setItem(k, v)); };
+const saved = dump();
+
+// ---- the fake Drive: files by id, a version per file, every call made ----
+const fake = {files: {}, next: 1, calls: [], dead: false, down: false, trips: []};
+const resp = (status, body) => ({ok: status < 400, status, json: async () => { if (typeof body === 'string') return JSON.parse(body); return body; }});
+async function fakeFetch(url, init = {}){
+  const m = init.method || 'GET';
+  fake.calls.push(m + ' ' + url);
+  if (fake.down) throw new TypeError('Failed to fetch');
+  if (fake.dead || !/^Bearer /.test((init.headers || {}).Authorization || '')) return resp(401, {});
+  if (/\/about\?/.test(url)) return resp(200, {user: {emailAddress: 'someone@example.com'}});
+  if (m === 'POST') {
+    const id = 'f' + fake.next++;
+    const parts = init.body.split(/--mylinks\d+/);
+    fake.files[id] = {text: parts[2].split('\r\n\r\n').slice(1).join('\r\n\r\n').trim(), version: 1, trashed: false};
+    return resp(200, {id});
+  }
+  const u = url.match(/\/files\/([^?]+)\?/);
+  if (u) {
+    const f = fake.files[u[1]];
+    if (!f) return resp(404, {});
+    if (m === 'PATCH') { f.text = init.body; f.version++; return resp(200, {version: String(f.version)}); }
+    if (/alt=media/.test(url)) return resp(200, f.text);
+    return resp(200, {version: String(f.version), trashed: f.trashed});
+  }
+  const live = Object.keys(fake.files).filter(id => !fake.files[id].trashed);
+  return resp(200, {files: live.length ? [{id: live[0]}] : []});
+}
+window.fakeFetch = fakeFetch;
+window.fakeAuth = url => { fake.trips.push(url); };
+const content = id => JSON.parse(fake.files[id].text);
+const urls = g => g.flatMap(x => x.links.map(l => l.url));
+
+// ---- the page under test ----
+let html = null;
+async function page(o = {}){
+  if (!html) html = await (await fetch('../index.html', {cache: 'reload'})).text();
+  const stubs = `window.fakeClientId = ${JSON.stringify(o.client === undefined ? 'test.apps.googleusercontent.com' : o.client)}; window.fetch = (u, i) => parent.fakeFetch(u, i); window.fakeAuth = parent.fakeAuth; window.fakeHash = ${JSON.stringify(o.hash || '')};` + (o.noPicker ? ' window.showSaveFilePicker = undefined;' : '');
+  document.getElementById('frames').innerHTML = '';
+  const f = document.createElement('iframe');
+  f.srcdoc = html.replace('<head>', '<head><script>' + stubs + '<\/script>');
+  document.getElementById('frames').append(f);
+  await new Promise(r => f.onload = r);
+  await sleep(200);
+  const w = f.contentWindow, d = f.contentDocument;
+  return {w, d, $: id => d.getElementById(id), rows: () => [...d.querySelectorAll('#list li[data-i] .tt')].map(e => e.textContent), msg: () => d.getElementById('msg').textContent, app: () => w.mylinks, acc: () => d.getElementById('account').textContent};
+}
+// comes back from Google with a good token: the state must match what the page stored on leaving
+async function back(extra = 'expires_in=3600'){
+  const state = sessionStorage.getItem('mylinks.state') || (sessionStorage.setItem('mylinks.state', 's1'), 's1');
+  return page({hash: `#access_token=tok&token_type=Bearer&state=${state}&${extra}`});
+}
+const type = async (p, text) => { p.$('paste').value = text; p.app().add(); await sleep(150); };
+const link = (url, title = url, extra = {}) => ({title, url, icon: '🔗', ...extra});
+const base = [{name: 'A', links: [link('https://a.one'), link('https://a.two')]}, {name: 'B', links: [link('https://b.one')]}];
+const copy = x => JSON.parse(JSON.stringify(x));
+
+async function run(){
+  // 1. nothing changes until a client ID is in
+  wipe();
+  let p = await page({client: 'PASTE-YOUR-CLIENT-ID.apps.googleusercontent.com'});
+  check('no client ID: no Drive button, page unchanged', !p.$('driveOn') && p.$('newFile'), p.acc());
+
+  // 2. the merge, on its own
+  wipe(); p = await page();
+  const M = p.app().mergeLists;
+  let r = M(base, base, base);
+  check('merge: nothing changed stays the same', JSON.stringify(r) === JSON.stringify(base), JSON.stringify(r));
+  let mine = copy(base), theirs = copy(base);
+  mine[0].links.push(link('https://mine.new')); theirs[1].links.push(link('https://theirs.new'));
+  r = M(base, mine, theirs);
+  check('merge: a link added on each side both stay', urls(r).includes('https://mine.new') && urls(r).includes('https://theirs.new') && urls(r).length === 5, urls(r).join());
+  mine = copy(base); theirs = copy(base); theirs[0].links.shift();
+  r = M(base, mine, theirs);
+  check('merge: deleted on the other device stays deleted', !urls(r).includes('https://a.one'), urls(r).join());
+  mine = copy(base); theirs = copy(base); mine[0].links.shift();
+  r = M(base, mine, theirs);
+  check('merge: deleted here is not brought back', !urls(r).includes('https://a.one'), urls(r).join());
+  mine = copy(base); theirs = copy(base); theirs[0].links[0].title = 'Renamed there';
+  r = M(base, mine, theirs);
+  check('merge: an edit on the other device comes in', r[0].links[0].title === 'Renamed there', JSON.stringify(r[0]));
+  mine = copy(base); theirs = copy(base); mine[0].links[0].title = 'Mine'; theirs[0].links[0].title = 'Theirs';
+  r = M(base, mine, theirs);
+  check('merge: both edited the same link, this device wins', r[0].links[0].title === 'Mine', JSON.stringify(r[0]));
+  mine = copy(base); theirs = copy(base); theirs[1].links.push(theirs[0].links.shift());
+  r = M(base, mine, theirs);
+  check('merge: a move on the other device comes in', r[1].links.some(l => l.url === 'https://a.one') && !r[0].links.some(l => l.url === 'https://a.one'), JSON.stringify(r));
+  theirs = copy(base); theirs.push({name: 'New there', links: []});
+  r = M(base, copy(base), theirs);
+  check('merge: a new empty folder comes in', r.some(g => g.name === 'New there'), JSON.stringify(r));
+  theirs = copy(base); theirs[1].name = 'B renamed';
+  r = M(base, copy(base), theirs);
+  check('merge: a folder renamed there, links follow, old folder goes', r.some(g => g.name === 'B renamed' && g.links.length === 1) && !r.some(g => g.name === 'B'), JSON.stringify(r));
+  r = M([], [{name: '', links: [link('https://x')]}], base);
+  check('merge: with no shared past nothing is dropped', urls(r).length === 4, urls(r).join());
+
+  // 3. first connect on the computer, from try-it mode, samples are not offered
+  wipe(); p = await page();
+  check('Connect button shows beside the file option', p.$('driveOn') && p.$('newFile'), p.acc());
+  p.$('driveOn').click();
+  check('Connect leaves for Google with drive.file, a state and the account chooser', fake.trips.length === 1 && /drive\.file/.test(decodeURIComponent(fake.trips[0])) && /state=/.test(fake.trips[0]) && /prompt=select_account/.test(fake.trips[0]) && /response_type=token/.test(fake.trips[0]), fake.trips[0]);
+  p = await back();
+  await until(() => /Connected/.test(p.msg()));
+  check('back from Google: connected, file made in Drive', /Connected/.test(p.msg()) && Object.keys(fake.files).length === 1, p.msg());
+  check('sidebar says syncing, with Disconnect', /Syncing/.test(p.acc()) && p.$('driveOff'), p.acc());
+  check('token not left in the storage STATE slot, id remembered', !sessionStorage.getItem('mylinks.state') && localStorage.getItem('mylinks.v1.driveId') === 'f1');
+  await until(() => localStorage.getItem('mylinks.v1.hint'));
+  check('email remembered so several Google accounts need no picker', localStorage.getItem('mylinks.v1.hint') === 'someone@example.com');
+  await type(p, 'One https://one.example');
+  check('a new link is written to the Drive file', urls(content('f1').groups).includes('https://one.example'), fake.files.f1.text);
+  check('nothing left waiting', !localStorage.getItem('board.v1.links.pending'));
+  check('Drive file is pretty-printed JSON', /\n  /.test(fake.files.f1.text));
+  const pc = dump();
+
+  // 4. the phone connects and finds the same file
+  wipe(); p = await page({noPicker: true});
+  check('phone: Connect button shows with no file picker', p.$('driveOn') && /phone/.test(p.acc()), p.acc());
+  p.$('driveOn').click();
+  p = await back();
+  await until(() => p.rows().includes('One'));
+  check('phone: finds the same file, no second one, sees the link', Object.keys(fake.files).length === 1 && p.rows().includes('One'), p.rows().join());
+  await type(p, 'Two https://two.example');
+  check('phone: its link goes in the same file', urls(content('f1').groups).includes('https://two.example') && urls(content('f1').groups).includes('https://one.example'), fake.files.f1.text);
+  const phone = dump();
+
+  // 5. the computer comes back to its open page and sees the phone's link
+  fill(pc); p = await page();
+  await until(() => p.rows().includes('Two'));
+  check('computer: reload shows the phone\'s link with no trip to Google', p.rows().includes('Two') && fake.trips.length === 2, p.rows().join() + ' trips ' + fake.trips.length);
+  fill(phone); const ph = await page({noPicker: true}); await until(() => ph.rows().includes('Two'));
+  await type(ph, 'Three https://three.example');
+  const phone2 = dump();
+  fill(dump()); // same device
+  fill(pc); p = await page(); await until(() => p.rows().includes('Three'));
+  check('page load picks up a later change too', p.rows().includes('Three'), p.rows().join());
+  await sleep(5100);
+  fake.files.f1.text = JSON.stringify({groups: [...content('f1').groups, {name: 'Elsewhere', links: [link('https://four.example', 'Four')]}]}); fake.files.f1.version++;
+  p.app().lookAgain();
+  await until(() => p.rows().includes('Four'));
+  check('coming back to an open page pulls the other device\'s change', p.rows().includes('Four') && /other device/.test(p.msg()), p.rows().join());
+
+  // 6. both devices change the list before either sees the other's: both changes stay
+  const v = dump();
+  fake.files.f1.text = JSON.stringify({groups: [...content('f1').groups, {name: 'Race', links: [link('https://race.example', 'Race')]}]}); fake.files.f1.version++;
+  await type(p, 'Five https://five.example');
+  await until(() => p.rows().includes('Race'));
+  let u = urls(content('f1').groups);
+  check('a write after another device wrote: neither change is lost', u.includes('https://race.example') && u.includes('https://five.example'), u.join());
+  check('and the other device\'s link appears on screen', p.rows().includes('Race'), p.rows().join());
+
+  // deleted on one device, while the other adds
+  const before = dump(), f = content('f1');
+  f.groups.forEach(g => g.links = g.links.filter(l => l.url !== 'https://one.example'));
+  fake.files.f1.text = JSON.stringify(f); fake.files.f1.version++;
+  await type(p, 'Six https://six.example');
+  u = urls(content('f1').groups);
+  check('a link deleted elsewhere is not brought back by this device\'s save', !u.includes('https://one.example') && u.includes('https://six.example'), u.join());
+
+  // 7. quick saves stay in order
+  p.$('paste').value = 'Seven https://seven.example'; p.app().add();
+  p.$('paste').value = 'Eight https://eight.example'; p.app().add();
+  await until(() => !localStorage.getItem('board.v1.links.pending'));
+  await sleep(100);
+  u = urls(content('f1').groups);
+  check('two quick saves both reach the file', u.includes('https://seven.example') && u.includes('https://eight.example'), u.join());
+
+  // 8. the hour runs out
+  const live = dump();
+  fake.dead = true; fake.calls.length = 0;
+  await type(p, 'Nine https://nine.example');
+  await until(() => /reconnect/i.test(p.msg()));
+  check('token dead mid-visit: link stays, message says reconnect, button shown', p.rows().includes('Nine') && /Kept in this browser/.test(p.msg()) && p.$('reconnect'), p.msg());
+  check('the change is kept for later', !!localStorage.getItem('board.v1.links.pending'));
+  check('sidebar offers Reconnect', p.$('reconnectSide'), p.acc());
+  fake.dead = false;
+  const trips = fake.trips.length;
+  p.$('reconnect').click();
+  check('Reconnect leaves for Google, without forcing the chooser', fake.trips.length === trips + 1 && !/prompt=/.test(fake.trips[trips]) && /login_hint=/.test(fake.trips[trips]), fake.trips[trips]);
+  p = await back();
+  await until(() => urls(content('f1').groups).includes('https://nine.example'));
+  check('back from Google: the waiting link reaches the file', urls(content('f1').groups).includes('https://nine.example') && !localStorage.getItem('board.v1.links.pending'), fake.files.f1.text);
+
+  // 9. a new visit after the hour: goes to Google on its own, shows the last list meanwhile
+  localStorage.removeItem('mylinks.v1.token'); sessionStorage.removeItem('mylinks.tried');
+  const t3 = fake.trips.length;
+  p = await page();
+  check('new visit: a silent trip to Google, no tap', fake.trips.length === t3 + 1 && /prompt=none/.test(fake.trips[t3]), fake.trips[t3]);
+  p = await back();
+  await until(() => /Syncing/.test(p.acc()));
+  check('and it comes back syncing', /Syncing/.test(p.acc()) && p.rows().includes('Nine'), p.acc());
+  // Google says it needs the person: no loop, one tap
+  localStorage.removeItem('mylinks.v1.token');
+  const t4 = fake.trips.length;
+  sessionStorage.setItem('mylinks.state', 's2');
+  p = await page({hash: '#error=interaction_required&state=s2'});
+  check('Google wants the person: no second trip, Reconnect shown, last list on screen', fake.trips.length === t4 && p.$('reconnect') && p.rows().includes('Nine'), p.msg());
+  // the same again on a plain reload inside five minutes
+  p = await page();
+  check('reload right after: no loop', fake.trips.length === t4 && p.$('reconnect'), 'trips ' + fake.trips.length);
+  await type(p, 'Ten https://ten.example');
+  check('adding while not connected: kept on the device', p.rows().includes('Ten') && !!localStorage.getItem('board.v1.links.pending') && !urls(content('f1').groups).includes('https://ten.example'), p.msg());
+  // a token back: the addition merges with a change made elsewhere meanwhile
+  const f2 = content('f1'); f2.groups.push({name: 'Meanwhile', links: [link('https://meanwhile.example')]});
+  fake.files.f1.text = JSON.stringify(f2); fake.files.f1.version++;
+  p = await back();
+  await until(() => urls(content('f1').groups).includes('https://ten.example'));
+  u = urls(content('f1').groups);
+  check('reconnect: this device\'s link and the other\'s both in the file', u.includes('https://ten.example') && u.includes('https://meanwhile.example'), u.join());
+
+  // 10. forged or broken trips back
+  localStorage.removeItem('mylinks.v1.token');
+  sessionStorage.setItem('mylinks.state', 'real');
+  sessionStorage.setItem('mylinks.tried', Date.now());
+  p = await page({hash: '#access_token=stolen&state=wrong&expires_in=3600'});
+  check('a token with the wrong state is refused', !localStorage.getItem('mylinks.v1.token') && !/Syncing/.test(p.acc()), p.acc());
+
+  // 11. no network
+  localStorage.setItem('mylinks.v1.token', JSON.stringify({token: 'tok', ends: Date.now() + 3e6}));
+  fake.down = true;
+  p = await page();
+  await until(() => /last time/.test(p.msg()));
+  check('offline with a token: last list shows and says so', p.rows().length > 0 && /back online/.test(p.msg()), p.msg());
+  await type(p, 'Eleven https://eleven.example');
+  check('offline: an add is kept on the device, message says why', p.rows().includes('Eleven') && /back online|reconnect/.test(p.msg()), p.msg());
+  fake.down = false;
+  p = await page();
+  await until(() => urls(content('f1').groups).includes('https://eleven.example'));
+  check('back online: it reaches the file', urls(content('f1').groups).includes('https://eleven.example'), fake.files.f1.text);
+
+  // 12. the file was deleted or trashed
+  await until(() => /Syncing/.test(p.acc()));
+  const had = urls(content('f1').groups).length;
+  fake.files.f1.trashed = true;
+  await sleep(5100);
+  p.app().lookAgain(); await sleep(300);
+  await type(p, 'Twelve https://twelve.example');
+  const ids = Object.keys(fake.files).filter(id => !fake.files[id].trashed);
+  check('file trashed: a new one is made with the list in it', ids.length === 1 && urls(content(ids[0]).groups).length === had + 1, ids.join() + ' ' + fake.files[ids[0]]?.text);
+  // a hand-broken file is never overwritten
+  fake.files[ids[0]].text = 'not json'; fake.files[ids[0]].version++;
+  await type(p, 'Thirteen https://thirteen.example');
+  check('file broken by hand: not overwritten, change kept', fake.files[ids[0]].text === 'not json' && !!localStorage.getItem('board.v1.links.pending'), p.msg());
+  fake.files[ids[0]].text = JSON.stringify({groups: []}); fake.files[ids[0]].version++;
+  localStorage.removeItem('board.v1.links.pending');
+
+  // 13. links already on the device
+  wipe(); fake.files = {}; fake.next = 1;
+  localStorage.setItem('mylinks.v1', JSON.stringify({groups: [{name: '', links: [link('https://mine.only', 'Mine only')]}]}));
+  p = await page();
+  p.$('driveOn').click();
+  p = await back();
+  await until(() => /on this device only/.test(p.msg()));
+  check('links already here: asks before touching them', /1 link is on this device only/.test(p.msg()), p.msg());
+  [...p.$('msg').querySelectorAll('button')].find(b => /Keep/.test(b.textContent)).click();
+  await until(() => urls(content('f1').groups).includes('https://mine.only'));
+  check('Keep these links puts them in the Drive file', urls(content('f1').groups).includes('https://mine.only') && !localStorage.getItem('mylinks.v1'), fake.files.f1.text);
+
+  // 14. a refused first connect
+  wipe();
+  sessionStorage.setItem('mylinks.state', 's3');
+  localStorage.setItem('mylinks.v1', JSON.stringify({groups: [{name: '', links: [link('https://stay.here', 'Stay')]}]}));
+  p = await page({hash: '#error=access_denied&state=s3'});
+  await sleep(50);
+  check('person says no to Google: back in try-it mode, links there, says so', p.rows().includes('Stay') && /wasn't connected/.test(p.msg()) && localStorage.getItem('mylinks.v1.drive') === null, p.msg());
+  // Drive unreachable right after sign-in
+  wipe(); fake.down = true;
+  localStorage.setItem('mylinks.v1', JSON.stringify({groups: [{name: '', links: [link('https://stay.here', 'Stay')]}]}));
+  p = await back();
+  await until(() => /Couldn't reach/.test(p.msg()));
+  check('Drive down at first connect: not connected, links stay', /Couldn't reach/.test(p.msg()) && p.rows().includes('Stay') && localStorage.getItem('mylinks.v1.drive') === null, p.msg());
+  fake.down = false;
+
+  // 15. disconnect
+  wipe();
+  p = await page(); p.$('driveOn').click(); p = await back();
+  await until(() => /Connected/.test(p.msg()));
+  await type(p, 'Fourteen https://fourteen.example');
+  p.$('driveOff').click();
+  await until(() => /Disconnected/.test(p.msg()));
+  const ks = Object.keys(localStorage).filter(k => /drive|token|hint|base/i.test(k));
+  check('Disconnect: nothing of Drive left on the device, file stays', /Disconnected/.test(p.msg()) && !ks.length && urls(content('f1').groups).includes('https://fourteen.example'), ks.join());
+  check('and the page is back to try-it mode', p.$('driveOn') && p.rows().includes('Example Domain'), p.rows().join());
+
+  // 16. moving over from a file on the computer
+  wipe();
+  localStorage.setItem('mylinks.v1.file', '1');
+  window.fakeHandles = null;
+  const fakeH = {name: 'My links.json', queryPermission: async () => 'granted', getFile: async () => ({text: async () => JSON.stringify({groups: [{name: 'F', links: [link('https://from.file', 'From file')]}]})})};
+  window.fh = {h: fakeH, get: async () => window.fh.h, set: async h => { window.fh.h = h; }, del: async () => { window.fh.h = null; }};
+  const html0 = html; html = html.replace('<head>', '<head><script>window.showSaveFilePicker = () => {}; window.fakeHandles = parent.fh;<\/script>');
+  p = await page();
+  await until(() => p.rows().includes('From file'));
+  check('file mode shows Move to Google Drive', p.$('driveOn') && /Move/.test(p.$('driveOn').textContent), p.acc());
+  p.$('driveOn').click();
+  p = await back();
+  await until(() => /on this device only/.test(p.msg()));
+  [...p.$('msg').querySelectorAll('button')].find(b => /Keep/.test(b.textContent)).click();
+  await until(() => urls(content('f1').groups).includes('https://from.file'));
+  check('the file\'s links move into Drive, file mode is off', urls(content('f1').groups).includes('https://from.file') && localStorage.getItem('mylinks.v1.file') === null && window.fh.h === null, fake.files.f1.text);
+  html = html0;
+
+  // 17. sideways scroll at phone width
+  wipe(); p = await page({noPicker: true});
+  document.getElementById('frames').firstChild.style.width = '375px';
+  await sleep(100);
+  check('no sideways scroll at 375 with the Drive block showing', p.d.documentElement.scrollWidth <= 375, 'scrollWidth ' + p.d.documentElement.scrollWidth);
+}
+run().catch(e => log(false, 'the run itself', e && e.stack || e)).finally(() => {
+  fill(saved);
+  const pass = lines.filter(l => l.startsWith('PASS')).length;
+  lines.unshift(`${pass} passed, ${fails} failed`);
+  log(fails === 0, 'done');
+  document.title = `${pass} passed, ${fails} failed`;
+  window.done = true;
+});
+</script>
+</body>
+</html>

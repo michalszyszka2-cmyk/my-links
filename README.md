@@ -22,6 +22,8 @@ This works in Chrome, Edge and Brave. Firefox and Safari cannot write files from
 
 The file is plain, readable JSON. Put it in a folder that syncs between your computers (OneDrive, Dropbox, Google Drive's desktop app) and "Open my file" picks it up on the other machine.
 
+To use the list on a phone as well, click "Connect Google Drive". The list then lives in one file, `My links.json`, in your own Drive, and every device you connect shares it. If two devices change the list at once, both changes are kept. The page talks to Google directly, with no server in between, and it can only touch the file it made. A copy of this app needs its own Google client: see [GOOGLE-SETUP.md](GOOGLE-SETUP.md).
+
 "Forget this file" makes the browser forget which file you chose. The file itself stays where it is.
 
 ## Run your own copy

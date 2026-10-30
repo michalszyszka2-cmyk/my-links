@@ -225,15 +225,15 @@ async function run(){
 
   // 10. a browser without the file picker (Firefox, Safari): the note, no buttons, try-it still works
   reset(); fakeHandles.h = null;
-  p = await page('window.showSaveFilePicker = undefined; window.fakeHandles = parent.fakeHandles;');
+  p = await page('window.fakeClientId = "PASTE-NO-ID"; window.showSaveFilePicker = undefined; window.fakeHandles = parent.fakeHandles;');
   check('no picker: the note says this browser can\'t save a file and names the ones that can', /This browser can't save a file on your computer \(Chrome, Edge and Brave can\), so your links stay in this browser\./.test(p.acc()) && !p.$('newFile') && !p.$('openFile'), p.acc());
   check('no picker: the page still works in try-it mode', p.rows().length === 3);
   p.$('paste').value = 'Still https://still.example/'; p.$('addBtn').click();
   await until(() => p.rows().length === 4);
   check('no picker: adding a link keeps it in the browser', JSON.parse(localStorage.getItem('mylinks.v1')).groups.some(g => g.links.some(l => l.url === 'https://still.example/')));
 
-  // 11. nothing of Google is left
-  check('no Google: no client ID, no Drive URL, no gsi script in the page', !/googleapis\.com\/drive|accounts\.google\.com|CLIENT_ID|drive\.file/.test(html));
+  // 11. Google Drive is optional: the file route never needs it (test/drive.test.html covers Drive itself)
+  check('no Google offer when the app has no Client ID', !/Google/.test(p.acc()), p.acc());
   check('wording: "this browser has no room to store it"', /this browser has no room to store it/.test(html) && !/has room to store it/.test(html.replace(/no room to store it/g, '')));
 
   // 12. the real handle store (IndexedDB) round-trips a value in this browser

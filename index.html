@@ -175,19 +175,30 @@ const $ = id => document.getElementById(id);
 // browser's file picker (the File System Access API: Chrome, Edge and Brave have it; Firefox and Safari
 // can't write files, so there the page stays in try-it mode). The file handle is remembered in this
 // browser's IndexedDB; on a later visit the browser asks once, with a click, before the file can be used.
+// In Google Drive: in ONE file, "My links.json", in the person's own Drive, so a phone and a computer share
+// it. Only this page talks to Google: no server. A sign-in lasts about an hour, so the token is kept here
+// until it runs out, and getting a new one is a full-page trip to Google and back (prompt=none: no screens
+// when Google already knows the person, one tap when it doesn't).
 // load() returns the saved groups (or null when nothing is saved yet); save(groups) writes the whole
 // list and throws if it can't, with a message that completes "the file updates once ...".
 const CAN_FILE = typeof window.showSaveFilePicker === 'function';
 const FILE_NAME = 'My links.json';
 const TYPES = [{description: 'My links file', accept: {'application/json': ['.json']}}];
 const STORE = 'mylinks.v1', KEPT = 'mylinks.v1.file';                   // KEPT = '1' once a file was chosen; the handle itself is in IndexedDB
+const CLIENT_ID = window.fakeClientId || '562041679645-ol8uo90k0j52vdl0v1bci31ckun1ruhm.apps.googleusercontent.com';   // public by design; no secret goes in this page
+const CAN_DRIVE = !/^PASTE-/.test(CLIENT_ID);
+const SCOPE = 'https://www.googleapis.com/auth/drive.file';              // only files this app created, nothing else in the Drive
+const AUTH = 'https://accounts.google.com/o/oauth2/v2/auth', API = 'https://www.googleapis.com/drive/v3', UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
+// DRIVE = '1' once connected; BASE = the list as last agreed with Drive, also what shows before a reconnect; CARRY = the list on screen while away at Google
+const DRIVE = 'mylinks.v1.drive', DRIVE_ID = 'mylinks.v1.driveId', SEEN = 'mylinks.v1.driveVersion', BASE = 'mylinks.v1.base', TOKEN = 'mylinks.v1.token', HINT = 'mylinks.v1.hint', CARRY = 'mylinks.v1.carry', STATE = 'mylinks.state', TRIED = 'mylinks.tried';
 const SAMPLES = () => [{name: 'Examples', links: [
   {title: 'Example Domain', url: 'https://example.com', icon: '🔗', added: today(), note: 'A page that exists so that examples have somewhere to point.'},
   {title: 'Bookmark', url: 'https://en.wikipedia.org/wiki/Bookmark', icon: '🔗', added: today(), note: 'Where the word comes from.'},
   {title: 'MDN Web Docs', url: 'https://developer.mozilla.org/', icon: '🔗', added: today(), note: 'How the web works, for the people who build it.'},
 ]}];
 const keptBefore = () => localStorage.getItem(KEPT) === '1';
-const mode = () => keptBefore() ? 'file' : 'local';
+const driveOn = () => localStorage.getItem(DRIVE) === '1';
+const mode = () => driveOn() ? 'drive' : keptBefore() ? 'file' : 'local';
 // the list with no dates and no empty folders, so two lists can be compared
 const shape = g => JSON.stringify(g.filter(x => x.links.length).map(x => ({name: x.name, links: x.links.map(({added, ...l}) => l)})));
 const justSamples = g => !g || shape(g) === shape(SAMPLES());
@@ -236,8 +247,137 @@ async function writeFile(groups){
   try { const w = await handle.createWritable(); await w.write(JSON.stringify({groups}, null, 2)); await w.close(); }
   catch (e) { throw fileError(e); }
 }
+
+// ---- Google Drive ----
+let token = null, tokenEnds = 0;
+try { const t = JSON.parse(localStorage.getItem(TOKEN)); if (t && t.ends > Date.now()) { token = t.token; tokenEnds = t.ends; } } catch {}
+const hasToken = () => !!token && Date.now() < tokenEnds;
+const readBase = () => { try { return JSON.parse(localStorage.getItem(BASE)); } catch { return null; } };
+const setBase = g => { try { localStorage.setItem(BASE, JSON.stringify(g)); } catch {} };
+// leaves for Google, which comes back to this page with a token in the address. prompt: 'none' = no screens or an error, 'select_account' = the first time, '' = only what Google needs
+function signIn(prompt){
+  const state = Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(36)).join('');
+  sessionStorage.setItem(STATE, state);
+  const q = new URLSearchParams({client_id: CLIENT_ID, redirect_uri: location.origin + location.pathname.replace(/index\.html$/, ''), response_type: 'token', scope: SCOPE, state});
+  const hint = localStorage.getItem(HINT);
+  if (hint) q.set('login_hint', hint);
+  if (prompt) q.set('prompt', prompt);
+  (window.fakeAuth || (u => location.assign(u)))(AUTH + '?' + q);
+}
+// the trip back: takes the token out of the address. Returns 'ok', 'err', or null when this load isn't a trip back
+function authBack(){
+  const h = window.fakeHash !== undefined ? window.fakeHash : location.hash;
+  if (!/^#(.*&)?(access_token|error)=/.test(h)) return null;
+  const p = new URLSearchParams(h.slice(1)), state = sessionStorage.getItem(STATE);
+  sessionStorage.removeItem(STATE);
+  try { history.replaceState(null, '', location.pathname + location.search); } catch {}
+  if (!state || p.get('state') !== state || !p.get('access_token')) return 'err';
+  token = p.get('access_token');
+  tokenEnds = Date.now() + ((+p.get('expires_in') || 3600) - 60) * 1000;
+  localStorage.setItem(TOKEN, JSON.stringify({token, ends: tokenEnds}));
+  return 'ok';
+}
+// no screens and no tap, at most once in five minutes, so a refused trip can't loop
+function tripToGoogle(){
+  const last = +sessionStorage.getItem(TRIED) || 0;
+  if (!navigator.onLine || Date.now() - last < 300000) return false;
+  sessionStorage.setItem(TRIED, Date.now());
+  signIn('none');
+  return true;
+}
+function needToken(){
+  if (token) { token = null; localStorage.removeItem(TOKEN); account(); }
+  const e = new Error('you reconnect to Google Drive'); e.status = 401; return e;
+}
+// one call to Drive with the token; the error message fits after "the file updates once"
+async function drive(url, init = {}){
+  if (!hasToken()) throw needToken();
+  let r;
+  try { r = await fetch(url, {...init, headers: {...(init.headers || {}), Authorization: 'Bearer ' + token}}); }
+  catch { throw new Error('this device is back online'); }
+  if (r.status === 401) throw needToken();
+  if (!r.ok) { const e = new Error(`Google Drive accepts it (it answered ${r.status})`); e.status = r.status; throw e; }
+  return r;
+}
+const fileBody = groups => JSON.stringify({groups}, null, 2);
+async function createDriveFile(groups){
+  const b = 'mylinks' + Date.now();
+  const body = `--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({name: FILE_NAME, mimeType: 'application/json'})}\r\n--${b}\r\nContent-Type: application/json\r\n\r\n${fileBody(groups)}\r\n--${b}--`;
+  return (await (await drive(`${UPLOAD}?uploadType=multipart&fields=id`, {method: 'POST', headers: {'Content-Type': `multipart/related; boundary=${b}`}, body})).json()).id;
+}
+// the file's id: remembered, else found (made by this app on any device), else made
+async function driveId(){
+  let id = localStorage.getItem(DRIVE_ID);
+  if (id) return id;
+  const q = encodeURIComponent(`name='${FILE_NAME}' and trashed=false`);
+  const found = (await (await drive(`${API}/files?q=${q}&spaces=drive&orderBy=createdTime&fields=files(id)&pageSize=1`)).json()).files || [];
+  id = found[0] ? found[0].id : await createDriveFile(readBase() || []);   // if the file was deleted, the last agreed list goes back in it
+  localStorage.setItem(DRIVE_ID, id);
+  return id;
+}
+// the file's version number, finding the file again once if it was deleted or trashed
+async function driveVersion(){
+  for (let i = 0; ; i++) {
+    const id = await driveId();
+    let m = null;
+    try { m = await (await drive(`${API}/files/${id}?fields=version,trashed`)).json(); }
+    catch (e) { if (e.status !== 404) throw e; }
+    if (m && !m.trashed) return {id, version: String(m.version)};
+    if (i) throw new Error('your Drive file can be found');
+    localStorage.removeItem(DRIVE_ID);
+  }
+}
+async function readDrive(id){
+  let d;
+  try { d = await (await drive(`${API}/files/${id}?alt=media`)).json(); }
+  catch (e) { if (e.status || e.message === 'this device is back online') throw e; throw new Error('your Drive file is readable JSON again'); }
+  if (!d || !Array.isArray(d.groups)) throw new Error('your Drive file is readable JSON again');
+  return d.groups;
+}
+async function loadDrive(){
+  const {id, version} = await driveVersion();
+  const g = await readDrive(id);
+  localStorage.setItem(SEEN, version);
+  return g;
+}
+// writes the list; if another device changed the file since this one last read it, the two are combined first
+async function writeDrive(sent){
+  const {id, version} = await driveVersion();
+  let out = sent;
+  if (version !== localStorage.getItem(SEEN)) out = mergeLists(readBase() || [], sent, await readDrive(id));
+  const r = await (await drive(`${UPLOAD}/${id}?uploadType=media&fields=version`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: fileBody(out)})).json();
+  localStorage.setItem(SEEN, String(r.version));
+  setBase(out);
+  if (out === sent) return;
+  const now = mergeLists(sent, groups, out);                              // changes made here while that was on its way stay
+  setGroups(now); render();
+  const k = pending();
+  if (k && JSON.stringify(k.groups) !== JSON.stringify(sent)) localStorage.setItem(PENDING, JSON.stringify({groups: now}));
+}
+// three lists to one: base = what both devices last agreed, mine = this device, theirs = the file. Links are known by URL.
+// A link gone from one side and unchanged on the other is a deletion; a link new on either side stays; an edit or a
+// move on one side wins; if both sides changed the same link, this device's version stays.
+function mergeLists(base, mine, theirs){
+  const index = gs => { const m = new Map(); gs.forEach(g => g.links.forEach(l => m.has(l.url) || m.set(l.url, {l, g: g.name}))); return m; };
+  const B = index(base), M = index(mine), T = index(theirs), same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const out = mine.map(g => ({...g, links: []}));
+  const folder = name => out.find(g => g.name === name) || out[out.push({name, links: []}) - 1];
+  for (const g of mine) for (const l of g.links) {
+    const b = B.get(l.url), t = T.get(l.url);
+    if (b && !t) continue;
+    const moved = b && t && b.g === g.name && t.g !== b.g;
+    folder(moved ? t.g : g.name).links.push(b && t && same(b.l, l) ? t.l : l);
+  }
+  for (const g of theirs) {
+    if (!base.some(x => x.name === g.name) && !mine.some(x => x.name === g.name)) folder(g.name);
+    for (const l of g.links) if (!M.has(l.url) && !B.has(l.url)) folder(g.name).links.push(l);
+  }
+  return out.filter(g => g.links.length || !base.some(x => x.name === g.name) || theirs.some(x => x.name === g.name));
+}
+
 const store = {
   load: async () => {
+    if (mode() === 'drive') return loadDrive();
     if (mode() === 'local') { const t = localStorage.getItem(STORE); return t ? JSON.parse(t).groups : SAMPLES(); }
     return readFile();
   },
@@ -247,6 +387,7 @@ const store = {
       catch { throw new Error('this browser has no room to store it'); }
       return true;
     }
+    if (mode() === 'drive') { await writeDrive(groups); return true; }
     await writeFile(groups);
     return true;
   },
@@ -361,27 +502,35 @@ function say(text, isErr, withUndo){
 // every change is kept in this browser at once, then written through store.save; if that
 // fails, the browser copy is retried every 15 s and wins on the next page load
 const PENDING = 'board.v1.links.pending';
-let retry = null;
-async function push(){
-  const body = localStorage.getItem(PENDING);
-  if (!body) return true;
-  await store.save(JSON.parse(body).groups);
-  if (localStorage.getItem(PENDING) === body) localStorage.removeItem(PENDING);
-  return true;
+let retry = null, queue = Promise.resolve();
+// one write at a time: each takes the newest list when its turn comes
+function push(){
+  const go = async () => {
+    const body = localStorage.getItem(PENDING);
+    if (!body) return true;
+    await store.save(JSON.parse(body).groups);
+    if (localStorage.getItem(PENDING) === body) localStorage.removeItem(PENDING);
+    return true;
+  };
+  const run = queue.then(go, go);
+  queue = run.catch(() => {});
+  return run;
 }
 async function save(okText, withUndo){
   render();
-  // in file mode before the file was read, the list on screen is not the file's, so what is kept here is only an addition
-  localStorage.setItem(PENDING, JSON.stringify(mode() === 'file' && !loaded ? {groups, partial: true} : {groups}));
+  // before the file was read, the list on screen is not the file's, so what is kept here is only an addition
+  localStorage.setItem(PENDING, JSON.stringify(mode() !== 'local' && !loaded ? {groups, partial: true} : {groups}));
   clearTimeout(retry);
   try { await push(); say(okText, false, withUndo); }
   catch (e) {
     say(okText + ' Kept in this browser; the file updates once ' + e.message + '.', true, withUndo);
+    if (mode() === 'drive' && e.status === 401) reconnectButton();
     retry = setTimeout(sync, 15000);
   }
 }
 async function sync(){
-  try { await push(); say(mode() === 'file' ? 'Saved to your file.' : 'Saved.'); }
+  if (!pending()) return;
+  try { await push(); say(mode() === 'local' ? 'Saved.' : 'Saved to your file.'); }
   catch { retry = setTimeout(sync, 15000); }
 }
 
@@ -601,16 +750,105 @@ function merge(from, folders){
 // the "where your links are kept" block under the folders
 function account(){
   const note = `<p>Keep your list as one file, <b>${esc(FILE_NAME)}</b>, on this computer. Nothing is stored anywhere else.</p>`;
+  const driveNote = '<p>To use your list on your phone and your computer, keep it in your Google Drive. This app can only touch its own file there.</p><button id="driveOn">Connect Google Drive</button>';
   const a = $('account');
-  if (!CAN_FILE) a.innerHTML = "<p>This browser can't save a file on your computer (Chrome, Edge and Brave can), so your links stay in this browser.</p>";
+  if (mode() === 'drive' && hasToken()) a.innerHTML = `<p><span class="ok">Syncing</span> with <b>${esc(FILE_NAME)}</b> in your Google Drive.</p><button id="driveOff">Disconnect</button>`;
+  else if (mode() === 'drive') a.innerHTML = '<p>Google Drive needs reconnecting. Your links are safe.</p><button id="reconnectSide">Reconnect</button><button id="driveOff">Disconnect</button>';
+  else if (!CAN_FILE) a.innerHTML = (CAN_DRIVE ? driveNote : '') + "<p>This browser can't save a file on your computer (Chrome, Edge and Brave can), so your links stay in this browser.</p>";
   else if (mode() === 'file' && (lost || !handle)) a.innerHTML = '<p>Your file has moved or is gone. Pick it again, or start a new one.</p><button id="openFile">Open my file</button><button id="newFile">New file</button><button id="forget">Forget this file</button>';
-  else if (mode() === 'file' && granted) a.innerHTML = `<p><span class="ok">Kept on this computer</span> as <b>${esc(handle.name)}</b>.</p><button id="forget">Forget this file</button>`;
+  else if (mode() === 'file' && granted) a.innerHTML = `<p><span class="ok">Kept on this computer</span> as <b>${esc(handle.name)}</b>.</p><button id="forget">Forget this file</button>` + (CAN_DRIVE ? '<button id="driveOn">Move to Google Drive</button>' : '');
   else if (mode() === 'file') a.innerHTML = `<p>The browser needs your OK to use <b>${esc(handle.name)}</b> on this visit.</p><button id="allow">Allow</button><button id="forget">Forget this file</button>`;
-  else a.innerHTML = note + '<button id="newFile">Keep it on this computer</button><button id="openFile">Open my file</button><p>Open my file is for a My links.json you made before, here or on another computer.</p>';
+  else a.innerHTML = (CAN_DRIVE ? driveNote : '') + note + '<button id="newFile">Keep it on this computer</button><button id="openFile">Open my file</button><p>Open my file is for a My links.json you made before, here or on another computer.</p>';
   if ($('newFile')) $('newFile').onclick = () => choose('new');
   if ($('openFile')) $('openFile').onclick = () => choose('open');
   if ($('allow')) $('allow').onclick = allow;
   if ($('forget')) $('forget').onclick = forget;
+  if ($('driveOn')) $('driveOn').onclick = connectDrive;
+  if ($('driveOff')) $('driveOff').onclick = driveOff;
+  if ($('reconnectSide')) $('reconnectSide').onclick = () => signIn('');
+}
+function reconnectButton(){
+  $('msg').insertAdjacentHTML('beforeend', '<button id="reconnect">Reconnect</button>');
+  $('reconnect').onclick = () => signIn('');
+}
+
+// the first trip to Google; the list on screen waits in CARRY for the way back
+function connectDrive(){
+  try { localStorage.setItem(CARRY, JSON.stringify({groups, from: mode()})); } catch {}
+  signIn('select_account');
+}
+// back from Google the first time: read or make the file, then ask about the links this device already had
+async function joinDrive(){
+  let carry = null;
+  try { carry = JSON.parse(localStorage.getItem(CARRY)); } catch {}
+  localStorage.removeItem(CARRY);
+  localStorage.setItem(DRIVE, '1');
+  const kept = pending();
+  localStorage.removeItem(PENDING);
+  try { setGroups(await store.load()); }
+  catch (e) {
+    localStorage.removeItem(DRIVE); localStorage.removeItem(DRIVE_ID); localStorage.removeItem(SEEN);
+    if (kept) localStorage.setItem(PENDING, JSON.stringify(kept));
+    await boot(null);
+    return say("Couldn't reach your Google Drive (" + e.message + '). Your links stay where they were.', true);
+  }
+  loaded = true;
+  setBase(groups);
+  drive(`${API}/about?fields=user(emailAddress)`).then(r => r.json()).then(d => localStorage.setItem(HINT, d.user.emailAddress)).catch(() => {});
+  if (carry && carry.from === 'file') { localStorage.removeItem(KEPT); handle = null; granted = false; handles.del().catch(() => {}); }
+  render(); account();
+  const list = carry && carry.groups, worth = list && !justSamples(list) && list.some(g => g.links.length) ? list : null;
+  if (!worth) { localStorage.removeItem(STORE); return say('Connected. Your links now live in your Google Drive.'); }
+  const n = worth.reduce((k, g) => k + g.links.length, 0), inFile = groups.reduce((k, g) => k + g.links.length, 0);
+  ask(`${plural(n, 'link')} ${n === 1 ? 'is' : 'are'} on this device only.` + (inFile ? ` Your Drive file already has ${plural(inFile, 'link')}.` : ''), [
+    ['Keep these links', () => { localStorage.removeItem(STORE); const k = merge(worth); save(k ? `Added ${plural(k, 'link')} to your Drive file.` : 'Those links were already in your Drive file.'); }],
+    [inFile ? 'Drop them' : 'Start empty', () => { localStorage.removeItem(STORE); say(inFile ? 'Dropped. Your Drive list is what you see.' : 'Started empty. Your links now live in your Google Drive.'); }],
+  ]);
+}
+// with a token: read the file, combine it with anything kept on this device, render
+async function pullDrive(){
+  const theirs = await store.load(), kept = pending();
+  loaded = true;
+  if (kept) setGroups(mergeLists(kept.partial ? [] : readBase() || [], kept.groups, theirs));
+  else setGroups(theirs);
+  setBase(theirs);
+  render(); account();
+  if (kept) { localStorage.setItem(PENDING, JSON.stringify({groups})); await sync(); }
+}
+// on coming back to the page: pick up what another device did, unless the person is in the middle of something
+let lastLook = 0;
+function lookAgain(){
+  if (mode() !== 'drive' || document.visibilityState !== 'visible' || Date.now() - lastLook < 5000) return;
+  lastLook = Date.now();
+  if (!hasToken()) { if (!$('paste').value.trim() && !tripToGoogle()) account(); return; }
+  if (pending()) return sync();
+  if (drag || picked.size || $('list').contains(document.activeElement)) return;
+  const go = async () => {
+    if (pending()) return;
+    const {id, version} = await driveVersion();
+    if (version === localStorage.getItem(SEEN)) return;
+    const theirs = await readDrive(id);
+    localStorage.setItem(SEEN, version);
+    setBase(theirs);
+    if (shape(theirs) === shape(groups)) return;
+    setGroups(theirs); render();
+    say('Updated from your other device.');
+  };
+  queue = queue.then(go, go).catch(() => {});
+}
+addEventListener('focus', lookAgain);
+document.addEventListener('visibilitychange', lookAgain);
+// back to try-it mode; the Drive file stays; nothing unsaved is dropped
+async function driveOff(){
+  if (pending()) {
+    try { await push(); }
+    catch (e) { return say('Some changes are not in your Drive file yet; the file updates once ' + e.message + '. Not disconnected, so nothing is lost.', true); }
+  }
+  token = null; loaded = false;
+  [DRIVE, DRIVE_ID, SEEN, BASE, TOKEN, HINT].forEach(k => localStorage.removeItem(k));
+  setGroups(await store.load());
+  render(); account();
+  say('Disconnected. Your links stay in your Google Drive; this device is back to try-it mode.');
 }
 
 // with a usable file in hand: read it, bring in anything kept in this browser, render
@@ -692,8 +930,24 @@ async function forget(){
 }
 
 // load the list once; notes (older descriptions keyed by URL) stays empty in this app
-async function boot(){
+async function boot(back){
+  if (back === 'ok' && !driveOn()) return joinDrive();
   const kept = pending();
+  if (mode() === 'drive') {
+    const base = readBase();
+    loaded = !!(base || (kept && !kept.partial));
+    setGroups(kept ? kept.groups : base || []);
+    render(); account();
+    if (hasToken()) {
+      try { await pullDrive(); }
+      catch (e) { account(); say("Couldn't read your Drive file, so this is your list from last time. It updates once " + e.message + '.', true); if (e.status === 401) reconnectButton(); }
+      return;
+    }
+    if (back !== 'err' && tripToGoogle()) return;
+    say(kept ? 'Changes on this device are not in your Drive file yet.' : 'This is your list from last time.', !!kept);
+    return reconnectButton();
+  }
+  if (back === 'err') { localStorage.removeItem(CARRY); setTimeout(() => say("Google Drive wasn't connected, so nothing changed.", true)); }
   if (mode() === 'file') {
     loaded = !!(kept && !kept.partial);
     setGroups(kept ? kept.groups : []);
@@ -714,9 +968,9 @@ async function boot(){
   render(); account();
   if (kept) { say('Changes kept in this browser are not saved yet; trying again.', true); sync(); }
 }
-boot().catch(() => say("Couldn't load the links.", true));
+boot(authBack()).catch(() => say("Couldn't load the links.", true));
 // for the fake-file test in test/file.test.html
-window.mylinks = {get groups(){ return groups; }, get handle(){ return handle; }, get granted(){ return granted; }, handles, choose, allow, forget, add, save, justSamples, SAMPLES};
+window.mylinks = {get groups(){ return groups; }, get handle(){ return handle; }, get granted(){ return granted; }, handles, choose, allow, forget, add, save, justSamples, SAMPLES, mergeLists, lookAgain, connectDrive, driveOff};
 </script>
 </body>
 </html>

@@ -59,7 +59,7 @@ Open questions: no step strip exists in the portfolio to copy (steps are written
 
 ## G. GATE: Google Cloud project
 
-Status: closed, not needed (desktop only, 29 Oct 2026)
+Status: reopened 30 Oct 2026 for stream J. Blocked on Michal: GOOGLE-SETUP.md, then paste the Client ID.
 
 ## H. GATE: retiring the board copy
 
@@ -87,4 +87,14 @@ Manual check for Michal (the native file dialog can't be driven from the Browser
 5. Optional: Import `D:\projects\board\pages\my-links\links.json` + `notes.json` (both in one pick) and check the file.
 
 Open questions: (1) Chrome may remember the permission between visits ("Allow on every visit") or ask every time; only his real test shows which. (2) The bookmarklet opens the github.io page in a new tab; that tab is the same origin, so the same file and permission apply.
+
+## J. Google Drive sync (added beside I)
+
+Status: built and tested against a fake Drive 30 Oct 2026, not committed; dormant until a real Client ID is in `index.html`. Michal's ask, 30 Oct: "connect my links app to Google Drive so it can synchronize across my PC and phone." This reverses the Google part of "Desktop only"; the file route stays as it was. He chose no server over staying signed in with a small server.
+
+What changed: third storage mode `drive` in index.html beside `local` and `file`. One file, `My links.json`, in the person's Drive, scope `drive.file`, found by name so a second device joins the same file. Sign-in is the full-page OAuth redirect (`response_type=token`), not the Google script and its pop-up: `prompt=none` with the remembered email as `login_hint` on a new visit needs no tap when Google already knows the person; if Google refuses, a Reconnect button appears, at most one silent trip per 5 minutes so it can't loop. The token is kept in localStorage until it expires (~1 hour); the `state` value is checked on the way back. BASE keeps the last agreed list, shown before a reconnect. `mergeLists(base, mine, theirs)` is a three-way merge by URL, run when the file's Drive `version` differs from the one last seen. On returning to the page (focus, visibilitychange) it pulls changes, unless something is selected, dragged or being edited. Writes go through one queue. "Move to Google Drive" carries a file-mode list across. A trashed or deleted file is remade from BASE. A file broken by hand is never overwritten.
+
+Tested: `test/drive.test.html`, 56 passed, 0 failed, fake Drive and fake Google, two devices simulated by swapping storage. `test/file.test.html` 55 passed, 0 failed (the "no Google in the page" check was replaced). Found and fixed by the suite: opening offline then adding a link wrongly dropped the sign-in. No sideways scroll at 375.
+
+Not tested: real Google. Nothing has touched a real client ID, real Drive or a real phone. Open questions: (1) whether the silent trip works on his phone, and from a home-screen icon; (2) Drive has no write lock in this design, so two writes within the same half-second can still lose one; (3) a link edited on both devices keeps the version of whichever wrote last; (4) the live portfolio card and PORTFOLIO-DRAFT.md still describe the computer file only; (5) the privacy paragraph in GOOGLE-SETUP.md step 7 is not written.
 
