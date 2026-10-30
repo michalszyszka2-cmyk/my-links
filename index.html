@@ -60,6 +60,7 @@
   #msg{margin-left:auto}
   #msg button{margin-left:6px}
   #msg.err{color:var(--danger)}
+  #toast{position:fixed;left:16px;right:16px;bottom:16px;z-index:9;padding:12px 14px;border:1px solid var(--rule);border-radius:10px;background:var(--panel);color:var(--ink);text-align:center}
   #where{font-size:13px;color:var(--ink);font-weight:600;margin-left:auto}
   #msg:not(:empty) + #where{margin-left:12px}
 
@@ -166,6 +167,7 @@
   </div>
 </main>
 </div>
+<div id="toast" role="status" hidden></div>
 <script>
 const $ = id => document.getElementById(id);
 
@@ -628,9 +630,21 @@ $('list').addEventListener('change', e => {
   if (e.target.checked) picked.add(k); else picked.delete(k);
   render();
 });
+// a phone can't reach a computer's localhost: opening one is a dead page with no way back, so say why and stay here
+const touchOnly = window.fakeTouch ?? matchMedia('(hover:none) and (pointer:coarse)').matches;
+const onComputer = url => { try { return /^(localhost|127\.0\.0\.1|\[::1\])$/.test(new URL(url).hostname); } catch { return false; } };
+let toastOff;
 $('list').addEventListener('click', e => {
   if (e.target.dataset.x) remove([e.target.dataset.x]);
   if (e.target.dataset.ed) describe(e.target.dataset.ed);
+  const a = e.target.closest('a');
+  if (a && touchOnly && onComputer(a.href)) {
+    e.preventDefault();
+    $('toast').textContent = 'This link only opens on your computer.';
+    $('toast').hidden = false;
+    clearTimeout(toastOff);
+    toastOff = setTimeout(() => { $('toast').hidden = true; }, 3000);
+  }
 });
 $('all').onchange = e => { picked = new Set(e.target.checked ? shownKeys() : []); render(); };
 $('del').onclick = () => remove([...picked]);

@@ -236,6 +236,25 @@ async function run(){
   check('no Google offer when the app has no Client ID', !/Google/.test(p.acc()), p.acc());
   check('wording: "this browser has no room to store it"', /this browser has no room to store it/.test(html) && !/has room to store it/.test(html.replace(/no room to store it/g, '')));
 
+  // 11b. a touch-only device can't reach a computer's localhost: the tap stays on the page and says why
+  const tapList = {groups: [{name: 'Mixed', links: [{title: 'Local', url: 'http://localhost:4420/pages/portfolio/'}, {title: 'Web', url: 'https://example.com/'}]}]};
+  const tap = (p, title) => {
+    const a = [...p.d.querySelectorAll('#list li[data-i] a')].find(x => x.querySelector('.tt').textContent === title);
+    let stayed = null;
+    p.d.addEventListener('click', e => { stayed = e.defaultPrevented; e.preventDefault(); }, {once: true});
+    a.querySelector('.tt').dispatchEvent(new p.w.MouseEvent('click', {bubbles: true, cancelable: true}));
+    return stayed;
+  };
+  const stubs = 'window.showSaveFilePicker = parent.fakeSave; window.showOpenFilePicker = parent.fakeOpen; window.fakeHandles = parent.fakeHandles;';
+  reset({'mylinks.v1': tapList}); fakeHandles.h = null;
+  p = await page('window.fakeTouch = true; ' + stubs);
+  check('phone: tapping a localhost link stays on the page', tap(p, 'Local') === true);
+  check('phone: and says why', !p.$('toast').hidden && p.$('toast').textContent === 'This link only opens on your computer.', p.$('toast').textContent);
+  check('phone: an ordinary web link still opens', tap(p, 'Web') === false);
+  reset({'mylinks.v1': tapList}); fakeHandles.h = null;
+  p = await page('window.fakeTouch = false; ' + stubs);
+  check('computer: a localhost link still opens', tap(p, 'Local') === false);
+
   // 12. the real handle store (IndexedDB) round-trips a value in this browser
   const real = (await page('window.showSaveFilePicker = parent.fakeSave; window.showOpenFilePicker = parent.fakeOpen;')).app().handles;
   await real.set({kind: 'probe', name: 'probe.json'});
